@@ -3,6 +3,7 @@ const { v4: uuid } = require('uuid');
 const authenticate = require('../../middleware/auth');
 const authorize = require('../../middleware/authorize');
 const { sortByDay } = require('../../utils/dayOrder');
+const { gradeFor, totalFor, clampScore } = require('../../utils/grading');
 
 const guard = [authenticate, authorize('teacher', 'head_teacher', 'super_admin')];
 const tid = req => req.user.teacher_id;
@@ -63,25 +64,34 @@ router.post('/my-attendance', ...guard, async (req, res) => {
 router.get('/marks', ...guard, async (req, res) => {
   const { classId, termId } = req.query;
   if (!classId || !termId) return res.status(422).json({ error: 'classId and termId required' });
-  if (!(await ownsClass(req.db, classId, tid(req)))) return res.status(403).json({ error: 'Not your class' });
+  if (!(await ownsClass(req.db, classId, tid(req)))) return res.status(403).json({ error: 'Not your speciality' });
   res.json(await req.db.mark.findMany({ where: { class_id: classId, term_id: termId }, orderBy: [{ student_name: 'asc' }, { subject_name: 'asc' }] }));
 });
 
-// POST /api/portal/teacher/marks  (bulk upsert)
+// POST /api/portal/teacher/marks  (bulk upsert) — only while an admin-opened
+// marks-filling session currently covers now(). Admins entering marks
+// directly via the Assessments page are never subject to this.
 router.post('/marks', ...guard, async (req, res) => {
   const { classId, termId, marks } = req.body;
   if (!classId || !termId || !Array.isArray(marks)) return res.status(422).json({ error: 'classId, termId, marks[] required' });
-  if (!(await ownsClass(req.db, classId, tid(req)))) return res.status(403).json({ error: 'Not your class' });
+  if (!(await ownsClass(req.db, classId, tid(req)))) return res.status(403).json({ error: 'Not your speciality' });
+
+  const now = new Date();
+  const openSession = await req.db.marksSession.findFirst({ where: { start_at: { lte: now }, end_at: { gte: now } } });
+  if (!openSession) return res.status(403).json({ error: 'Marks filling is currently closed. Ask an admin to open a new session.' });
 
   await req.db.$transaction(marks.map(m => {
-    const total = (m.ca_score || 0) + (m.exam_score || 0);
+    const ca = clampScore(m.ca_score);
+    const exam = clampScore(m.exam_score);
+    const total = totalFor(ca, exam);
+    const { grade, remark } = gradeFor(total);
     return req.db.mark.upsert({
       where: { marks_student_subject_term: { student_id: m.student_id, subject_id: m.subject_id, term_id: termId } },
-      update: { ca_score: m.ca_score ?? 0, exam_score: m.exam_score ?? 0, total_score: total, grade: m.grade || null, remark: m.remark || null, updated_at: new Date() },
+      update: { ca_score: ca, exam_score: exam, total_score: total, grade: m.grade || grade, remark: m.remark || remark, updated_at: new Date() },
       create: {
         id: uuid(), student_id: m.student_id, student_name: m.student_name || null, student_number: m.student_number || null,
         subject_id: m.subject_id, subject_name: m.subject_name || null, term_id: termId, class_id: classId,
-        ca_score: m.ca_score ?? 0, exam_score: m.exam_score ?? 0, total_score: total, grade: m.grade || null, remark: m.remark || null,
+        ca_score: ca, exam_score: exam, total_score: total, grade: m.grade || grade, remark: m.remark || remark,
       },
     });
   }));
@@ -92,7 +102,7 @@ router.post('/marks', ...guard, async (req, res) => {
 router.get('/student-attendance', ...guard, async (req, res) => {
   const { classId, date } = req.query;
   if (!classId) return res.status(422).json({ error: 'classId required' });
-  if (!(await ownsClass(req.db, classId, tid(req)))) return res.status(403).json({ error: 'Not your class' });
+  if (!(await ownsClass(req.db, classId, tid(req)))) return res.status(403).json({ error: 'Not your speciality' });
   const where = { class_id: classId };
   if (date) where.date = date;
   res.json(await req.db.attendanceRecord.findMany({ where, orderBy: { student_name: 'asc' } }));
@@ -102,7 +112,7 @@ router.get('/student-attendance', ...guard, async (req, res) => {
 router.post('/student-attendance', ...guard, async (req, res) => {
   const { classId, date, records } = req.body;
   if (!classId || !date || !Array.isArray(records)) return res.status(422).json({ error: 'classId, date, records[] required' });
-  if (!(await ownsClass(req.db, classId, tid(req)))) return res.status(403).json({ error: 'Not your class' });
+  if (!(await ownsClass(req.db, classId, tid(req)))) return res.status(403).json({ error: 'Not your speciality' });
 
   await req.db.$transaction(records.map(r => req.db.attendanceRecord.upsert({
     where: { attendance_student_date: { student_id: r.student_id, date } },
@@ -118,7 +128,7 @@ router.post('/student-attendance', ...guard, async (req, res) => {
 // GET /api/portal/teacher/behavior?classId=
 router.get('/behavior', ...guard, async (req, res) => {
   const { classId } = req.query;
-  if (classId && !(await ownsClass(req.db, classId, tid(req)))) return res.status(403).json({ error: 'Not your class' });
+  if (classId && !(await ownsClass(req.db, classId, tid(req)))) return res.status(403).json({ error: 'Not your speciality' });
   const where = { teacher_id: tid(req) };
   if (classId) where.class_id = classId;
   const rows = await req.db.studentBehavior.findMany({ where, include: { student: { select: { first_name: true, last_name: true } } }, orderBy: { date: 'desc' } });

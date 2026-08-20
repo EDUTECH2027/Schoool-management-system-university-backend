@@ -406,6 +406,8 @@ model Mark {
   total_score    Float     @default(0)
   grade          String?
   remark         String?
+  resit_score    Float?
+  resit_grade    String?
   created_at     DateTime? @default(now())
   updated_at     DateTime? @default(now())
 
@@ -418,6 +420,23 @@ model Mark {
   @@index([student_id])
   @@index([term_id])
   @@map("marks")
+}
+
+// A school-wide window during which teachers may submit marks (their own
+// /api/portal/teacher/marks route only — admins entering marks directly via
+// the Assessments page are never gated by this). "Open" means now falls
+// between start_at and end_at; closing early just moves end_at up to now,
+// so there's no separate closed flag to keep in sync.
+model MarksSession {
+  id         String    @id
+  label      String?
+  start_at   DateTime
+  end_at     DateTime
+  created_by String?
+  created_at DateTime? @default(now())
+
+  @@index([start_at, end_at])
+  @@map("marks_sessions")
 }
 
 // Cumulative, whole-career academic record — one row per student (see

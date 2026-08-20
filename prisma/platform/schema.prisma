@@ -57,6 +57,7 @@ model School {
   email                String
   admin_name           String
   admin_email          String
+  admin_whatsapp       String?
   plan_id              String?
   status               SchoolStatus @default(active)
   subscription_started DateTime?    @default(now())

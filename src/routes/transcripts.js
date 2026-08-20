@@ -17,7 +17,7 @@ router.post('/generate', authenticate, async (req, res) => {
     where: { class_id: classId, is_active: true },
     orderBy: [{ last_name: 'asc' }, { first_name: 'asc' }],
   });
-  if (students.length === 0) return res.status(422).json({ error: 'No active students in this class' });
+  if (students.length === 0) return res.status(422).json({ error: 'No active students in this speciality' });
 
   const studentIds = students.map(s => s.id);
   const allMarks = await req.db.mark.findMany({ where: { student_id: { in: studentIds } } });

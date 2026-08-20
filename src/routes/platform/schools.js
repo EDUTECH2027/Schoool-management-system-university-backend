@@ -8,11 +8,22 @@ const { provisionTenantSchema, dropTenantSchema } = require('../../db/provisionT
 const authenticatePlatform = require('../../middleware/authenticatePlatform');
 const authorizePlatform = require('../../middleware/authorizePlatform');
 const { logAction } = require('./_helpers');
+const { sendWhatsAppTemplate } = require('../../utils/whatsapp');
 
 const guard = [authenticatePlatform, authorizePlatform()];
 
 function generateTempPassword() {
   return `Welcome@${crypto.randomInt(1000, 9999)}`;
+}
+
+// Parameter order must match the approved WhatsApp template's placeholders
+// ({{1}}, {{2}}, ...) configured in Bird under BIRD_WHATSAPP_TEMPLATE_SLUG.
+function sendAdminCredentialsWhatsApp({ schoolName, adminName, adminEmail, tempPassword, adminWhatsapp }) {
+  const loginUrl = process.env.FRONTEND_URL || 'http://localhost:5173';
+  return sendWhatsAppTemplate({
+    to: adminWhatsapp,
+    parameters: [adminName, schoolName, adminEmail, tempPassword, loginUrl],
+  });
 }
 
 async function withLiveCounts(school) {
@@ -73,8 +84,9 @@ router.post('/', ...guard, async (req, res) => {
   const { name, phone, address, plan_id, admin_name } = req.body;
   const email = req.body.email?.trim();
   const admin_email = req.body.admin_email?.trim();
-  if (!name || !email || !plan_id || !admin_name || !admin_email) {
-    return res.status(422).json({ error: 'name, email, plan_id, admin_name, admin_email are required' });
+  const admin_whatsapp = req.body.admin_whatsapp?.trim();
+  if (!name || !email || !plan_id || !admin_name || !admin_email || !admin_whatsapp) {
+    return res.status(422).json({ error: 'name, email, plan_id, admin_name, admin_email, admin_whatsapp are required' });
   }
 
   const directoryHit = await platformClient.userDirectory.findFirst({
@@ -115,7 +127,7 @@ router.post('/', ...guard, async (req, res) => {
       platformClient.school.create({
         data: {
           id: schoolId, name, code: null, address: address || null, phone: phone || null, email,
-          admin_name, admin_email, plan_id, status: 'active', subscription_expiry: null,
+          admin_name, admin_email, admin_whatsapp, plan_id, status: 'active', subscription_expiry: null,
         },
       }),
       platformClient.userDirectory.create({
@@ -129,8 +141,10 @@ router.post('/', ...guard, async (req, res) => {
 
   await logAction(req, 'school.created', 'school', schoolId, { name });
 
+  const waResult = await sendAdminCredentialsWhatsApp({ schoolName: name, adminName: admin_name, adminEmail: admin_email, tempPassword, adminWhatsapp: admin_whatsapp });
+
   const school = await platformClient.school.findUnique({ where: { id: schoolId } });
-  res.status(201).json({ school, admin: { email: admin_email, tempPassword } });
+  res.status(201).json({ school, admin: { email: admin_email, tempPassword, whatsapp: admin_whatsapp, whatsappSent: waResult.sent } });
 });
 
 // PUT /api/platform/schools/:id

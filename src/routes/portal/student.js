@@ -1,17 +1,50 @@
 const router = require('express').Router();
+const fs = require('fs');
+const path = require('path');
+const { v4: uuid } = require('uuid');
 const authenticate = require('../../middleware/auth');
 const authorize = require('../../middleware/authorize');
 const { sortByDay } = require('../../utils/dayOrder');
 const { getLiveGpaSummary } = require('../../utils/transcriptMath');
+const { upload, UPLOADS_ROOT } = require('../../utils/studentUploads');
 
 const guard = [authenticate, authorize('student')];
 const sid = req => req.user.student_id;
 
 // GET /api/portal/student/profile
 router.get('/profile', ...guard, async (req, res) => {
-  const s = await req.db.student.findUnique({ where: { id: sid(req) } });
+  const s = await req.db.student.findUnique({
+    where: { id: sid(req) },
+    include: { documents: { orderBy: { created_at: 'desc' } } },
+  });
   if (!s) return res.status(404).json({ error: 'Student profile not found' });
   res.json(s);
+});
+
+// POST /api/portal/student/documents — self-service upload, kept on the
+// student's own record permanently until they delete it themselves.
+router.post('/documents', ...guard, upload.single('file'), async (req, res) => {
+  if (!req.file) return res.status(422).json({ error: 'file is required' });
+  const title = (req.body.title || req.file.originalname).trim();
+  const url = `/uploads/${req.user.school_id}/students/${req.file.filename}`;
+  const created = await req.db.studentDocument.create({
+    data: { id: uuid(), student_id: sid(req), title, file_url: url },
+  });
+  res.status(201).json(created);
+});
+
+// DELETE /api/portal/student/documents/:id — only ever their own document.
+router.delete('/documents/:id', ...guard, async (req, res) => {
+  const doc = await req.db.studentDocument.findUnique({ where: { id: req.params.id } });
+  if (!doc || doc.student_id !== sid(req)) return res.status(404).json({ error: 'Document not found' });
+
+  await req.db.studentDocument.delete({ where: { id: doc.id } });
+
+  // Best-effort cleanup of the on-disk file.
+  const filePath = path.join(UPLOADS_ROOT, doc.file_url.replace('/uploads/', ''));
+  fs.unlink(filePath, () => {});
+
+  res.status(204).end();
 });
 
 // GET /api/portal/student/marks?termId=
@@ -59,6 +92,19 @@ router.get('/transcript', ...guard, async (req, res) => {
 // been generated or published yet.
 router.get('/gpa-summary', ...guard, async (req, res) => {
   res.json(await getLiveGpaSummary(req.db, { studentId: sid(req) }));
+});
+
+// GET /api/portal/student/fees
+router.get('/fees', ...guard, async (req, res) => {
+  const fees = await req.db.feeRecord.findMany({
+    where: { student_id: sid(req) },
+    include: { payments: { select: { amount: true, method: true, payment_date: true } } },
+    orderBy: { created_at: 'desc' },
+  });
+  res.json(fees.map(({ payments, ...rest }) => ({
+    ...rest,
+    payments: payments.map(p => ({ amount: p.amount, method: p.method, date: p.payment_date })),
+  })));
 });
 
 // GET /api/portal/student/behavior

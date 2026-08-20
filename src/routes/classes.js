@@ -10,7 +10,7 @@ router.get('/', authenticate, async (req, res) => {
 
 router.get('/:id', authenticate, async (req, res) => {
   const row = await req.db.class.findUnique({ where: { id: req.params.id } });
-  if (!row) return res.status(404).json({ error: 'Class not found' });
+  if (!row) return res.status(404).json({ error: 'Speciality not found' });
   res.json(row);
 });
 

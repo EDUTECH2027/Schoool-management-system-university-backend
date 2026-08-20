@@ -1,14 +1,16 @@
 const router = require('express').Router();
 const authenticate = require('../middleware/auth');
 const { v4: uuid } = require('uuid');
+const { gradeFor, totalFor, clampScore } = require('../utils/grading');
 
-const gradeFor = (score) => {
-  if (score >= 90) return { grade: 'A+', remark: 'Excellent' };
-  if (score >= 80) return { grade: 'A',  remark: 'Very Good' };
-  if (score >= 70) return { grade: 'B',  remark: 'Good' };
-  if (score >= 60) return { grade: 'C',  remark: 'Average' };
-  if (score >= 50) return { grade: 'D',  remark: 'Below Average' };
-  return { grade: 'F', remark: 'Fail' };
+// A resit is optional — most students never take one, so an absent/empty
+// value means "no resit", not "resit score 0". Only a genuine number counts.
+const resitFieldsFor = (resitScore) => {
+  if (resitScore === undefined || resitScore === null || resitScore === '') {
+    return { resit_score: null, resit_grade: null };
+  }
+  const score = clampScore(resitScore);
+  return { resit_score: score, resit_grade: gradeFor(score).grade };
 };
 
 // GET /api/marks?termId=t1&classId=c4&studentId=st6&subjectId=sub1
@@ -34,8 +36,8 @@ router.post('/', authenticate, async (req, res) => {
   if (firstRecord) {
     const termExists = await req.db.term.findUnique({ where: { id: firstRecord.termId } });
     const subjectExists = await req.db.subject.findUnique({ where: { id: firstRecord.subjectId } });
-    if (!termExists) return res.status(422).json({ error: `Term not found: ${firstRecord.termId}` });
-    if (!subjectExists) return res.status(422).json({ error: `Subject not found: ${firstRecord.subjectId}` });
+    if (!termExists) return res.status(422).json({ error: `Semester not found: ${firstRecord.termId}` });
+    if (!subjectExists) return res.status(422).json({ error: `Course not found: ${firstRecord.subjectId}` });
   }
 
   let saved = 0;
@@ -43,15 +45,19 @@ router.post('/', authenticate, async (req, res) => {
   for (const r of records) {
     if (!r.studentId || !r.subjectId || !r.termId) continue;
     try {
-      const total = Math.round(((r.caScore || 0) + (r.examScore || 0)) / 2);
+      const ca = clampScore(r.caScore);
+      const exam = clampScore(r.examScore);
+      const total = totalFor(ca, exam);
       const { grade, remark } = gradeFor(total);
+      const resitFields = resitFieldsFor(r.resitScore);
       await req.db.mark.upsert({
         where: { marks_student_subject_term: { student_id: r.studentId, subject_id: r.subjectId, term_id: r.termId } },
-        update: { ca_score: r.caScore || 0, exam_score: r.examScore || 0, total_score: total, grade: r.grade || grade, remark: r.remark || remark, updated_at: new Date() },
+        update: { ca_score: ca, exam_score: exam, total_score: total, grade: r.grade || grade, remark: r.remark || remark, ...resitFields, updated_at: new Date() },
         create: {
           id: r.id || uuid(), student_id: r.studentId, student_name: r.studentName || null, student_number: r.studentNumber || null,
           subject_id: r.subjectId, subject_name: r.subjectName || null, term_id: r.termId, class_id: r.classId || null,
-          ca_score: r.caScore || 0, exam_score: r.examScore || 0, total_score: total, grade: r.grade || grade, remark: r.remark || remark,
+          ca_score: ca, exam_score: exam, total_score: total, grade: r.grade || grade, remark: r.remark || remark,
+          ...resitFields,
         },
       });
       saved++;
@@ -69,12 +75,18 @@ router.post('/', authenticate, async (req, res) => {
 
 // PUT /api/marks/:id
 router.put('/:id', authenticate, async (req, res) => {
-  const { caScore, examScore, grade, remark } = req.body;
-  const total = Math.round(((caScore || 0) + (examScore || 0)) / 2);
+  const { caScore, examScore, grade, remark, resitScore } = req.body;
+  const ca = clampScore(caScore);
+  const exam = clampScore(examScore);
+  const total = totalFor(ca, exam);
   const auto = gradeFor(total);
   const updated = await req.db.mark.update({
     where: { id: req.params.id },
-    data: { ca_score: caScore || 0, exam_score: examScore || 0, total_score: total, grade: grade || auto.grade, remark: remark || auto.remark, updated_at: new Date() },
+    data: {
+      ca_score: ca, exam_score: exam, total_score: total,
+      grade: grade || auto.grade, remark: remark || auto.remark,
+      ...resitFieldsFor(resitScore), updated_at: new Date(),
+    },
   });
   res.json(updated);
 });
