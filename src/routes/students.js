@@ -70,6 +70,13 @@ router.post('/', authenticate, upload.fields([{ name: 'photo', maxCount: 1 }, { 
   } = req.body;
   if (!firstName || !lastName) return res.status(422).json({ error: 'firstName and lastName required' });
 
+  const nameCount = await req.db.student.count({
+    where: { first_name: { equals: firstName, mode: 'insensitive' }, last_name: { equals: lastName, mode: 'insensitive' } },
+  });
+  if (nameCount >= 2) {
+    return res.status(409).json({ error: `A student named "${firstName} ${lastName}" already exists twice — please verify before adding another.` });
+  }
+
   let parsedSiblingIds = [];
   if (siblingIds) {
     try { parsedSiblingIds = JSON.parse(siblingIds); } catch { parsedSiblingIds = []; }
@@ -178,6 +185,14 @@ router.post('/import', authenticate, async (req, res) => {
     const lastName = String(row.lastName || '').trim();
     if (!firstName || !lastName) {
       results.errors.push({ row: i + 2, reason: 'Missing first or last name' });
+      continue;
+    }
+
+    const nameCount = await req.db.student.count({
+      where: { first_name: { equals: firstName, mode: 'insensitive' }, last_name: { equals: lastName, mode: 'insensitive' } },
+    });
+    if (nameCount >= 2) {
+      results.errors.push({ row: i + 2, reason: `Student "${firstName} ${lastName}" already exists twice` });
       continue;
     }
 

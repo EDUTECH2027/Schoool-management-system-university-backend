@@ -120,6 +120,30 @@ model User {
   @@map("users")
 }
 
+enum PasswordResetStatus {
+  pending
+  approved
+  resolved
+  dismissed
+}
+
+// A forgotten-password request raised from the login screen. Approving it
+// (admin action) doesn't set a new password itself — it just authorizes the
+// self-service reset-password endpoint to accept one new-password submission
+// for this email, with no old/temp password required.
+model PasswordResetRequest {
+  id           String              @id
+  email        String
+  status       PasswordResetStatus @default(pending)
+  requested_at DateTime?           @default(now())
+  approved_at  DateTime?
+  approved_by  String?
+
+  @@index([email])
+  @@index([status])
+  @@map("password_reset_requests")
+}
+
 // ── School (singleton profile row) ───────────────────────────────
 model School {
   id           String    @id
