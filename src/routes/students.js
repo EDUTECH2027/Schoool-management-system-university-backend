@@ -4,6 +4,7 @@ const bcrypt = require('bcryptjs');
 const { v4: uuid } = require('uuid');
 const platformClient = require('../db/platformClient');
 const { upload } = require('../utils/studentUploads');
+const { buildMatricule, loginEmailFor } = require('../utils/matricule');
 
 const parse = row => row ? { ...row, isActive: !!row.is_active } : null;
 
@@ -82,11 +83,11 @@ router.post('/', authenticate, upload.fields([{ name: 'photo', maxCount: 1 }, { 
     try { parsedSiblingIds = JSON.parse(siblingIds); } catch { parsedSiblingIds = []; }
   }
 
-  const year = new Date().getFullYear();
   const count = (await req.db.student.count()) + 1;
-  const studentNumber = `BSPS-${year}-${String(count).padStart(3, '0')}`;
+  const school = await req.db.school.findFirst();
+  const studentNumber = buildMatricule(school, count);
   const id = uuid();
-  const loginEmail = `${studentNumber.toLowerCase().replace(/-/g, '')}@school.local`;
+  const loginEmail = loginEmailFor(studentNumber);
 
   const existing = await req.db.user.findFirst({ where: { email: { equals: loginEmail, mode: 'insensitive' } } });
   if (existing) return res.status(409).json({ error: 'A login already exists for this student number' });
@@ -174,7 +175,7 @@ router.post('/import', authenticate, async (req, res) => {
   const classes = await req.db.class.findMany({ select: { id: true, name: true, grade_level_name: true } });
   const classByName = new Map(classes.map(c => [c.name.trim().toLowerCase(), c]));
 
-  const year = new Date().getFullYear();
+  const school = await req.db.school.findFirst();
   let seq = await req.db.student.count();
 
   const results = { created: 0, errors: [] };
@@ -205,12 +206,12 @@ router.post('/import', authenticate, async (req, res) => {
     } else {
       do {
         seq += 1;
-        studentNumber = `BSPS-${year}-${String(seq).padStart(3, '0')}`;
+        studentNumber = buildMatricule(school, seq);
       // eslint-disable-next-line no-await-in-loop
       } while (await req.db.student.findFirst({ where: { student_number: studentNumber } }));
     }
 
-    const loginEmail = `${studentNumber.toLowerCase().replace(/-/g, '')}@school.local`;
+    const loginEmail = loginEmailFor(studentNumber);
     const existingUser = await req.db.user.findFirst({ where: { email: { equals: loginEmail, mode: 'insensitive' } } });
     if (existingUser) { results.errors.push({ row: i + 2, reason: `Login already exists for ${studentNumber}` }); continue; }
 

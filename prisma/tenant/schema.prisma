@@ -157,6 +157,15 @@ model School {
   logo_url     String?
   updated_at   DateTime? @default(now())
 
+  // Matricule (student ID) nomenclature — configurable per school in Settings.
+  // A generated matricule is [prefix][sep][year if included][sep][seq padded to digits],
+  // e.g. prefix="BSPS", digits=3 → "BSPS-2026-001". Defaults reproduce the format
+  // that was previously hardcoded in routes/students.js, so existing schools see no change.
+  matricule_prefix       String  @default("BSPS")
+  matricule_include_year Boolean @default(true)
+  matricule_digits       Int     @default(3)
+  matricule_separator    String  @default("-")
+
   @@map("school")
 }
 

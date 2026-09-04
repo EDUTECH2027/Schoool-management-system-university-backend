@@ -6,6 +6,7 @@ const { body, validationResult } = require('express-validator');
 const platformClient = require('../db/platformClient');
 const tenantPool = require('../db/tenantPool');
 const authenticate = require('../middleware/auth');
+const { loginEmailFor } = require('../utils/matricule');
 
 const SECRET = () => process.env.JWT_SECRET || 'dev_secret';
 const EXPIRES = () => process.env.JWT_EXPIRES_IN || '24h';
@@ -102,7 +103,7 @@ router.post('/student-login',
     const errors = validationResult(req);
     if (!errors.isEmpty()) return res.status(422).json({ errors: errors.array() });
 
-    const loginEmail = `${req.body.studentId.toLowerCase().replace(/-/g, '')}@school.local`;
+    const loginEmail = loginEmailFor(req.body.studentId);
 
     const dirEntry = await platformClient.userDirectory.findFirst({
       where: { email: { equals: loginEmail, mode: 'insensitive' } },

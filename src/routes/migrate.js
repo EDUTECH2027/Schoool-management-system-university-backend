@@ -4,6 +4,7 @@ const { v4: uuid } = require('uuid');
 const authenticate = require('../middleware/auth');
 const authorize = require('../middleware/authorize');
 const platformClient = require('../db/platformClient');
+const { loginEmailFor } = require('../utils/matricule');
 
 const DEFAULT_PASSWORD = 'Welcome@2025';
 
@@ -50,7 +51,7 @@ router.post('/portal-accounts', authenticate, authorize('super_admin', 'head_tea
     const students = await tx.student.findMany({ where: { is_active: true } });
     for (const s of students) {
       if (s.user_id) { result.students.skipped++; continue; }
-      const email = `${s.student_number.toLowerCase().replace(/-/g, '')}@school.local`;
+      const email = loginEmailFor(s.student_number);
       const existing = await tx.user.findFirst({ where: { email: { equals: email, mode: 'insensitive' } } });
       if (existing) {
         await tx.student.update({ where: { id: s.id }, data: { user_id: existing.id, updated_at: new Date() } });
