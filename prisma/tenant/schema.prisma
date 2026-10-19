@@ -14,6 +14,7 @@ enum Role {
   teacher
   student
   parent
+  finance_officer
 }
 
 enum Gender {
@@ -330,6 +331,8 @@ model Student {
   documents          StudentDocument[]
 
   @@index([class_id])
+  @@index([is_active])
+  payment_transactions PaymentTransaction[]
   @@map("students")
 }
 
@@ -542,14 +545,19 @@ model FeeRecord {
   balance        Float     @default(0)
   status         FeeStatus @default(pending)
   due_date       String?
+  currency       String    @default("XAF")
   created_at     DateTime? @default(now())
   updated_at     DateTime? @default(now())
 
+  transactions PaymentTransaction[]
   student  Student   @relation(fields: [student_id], references: [id], onDelete: Cascade)
   class    Class?    @relation(fields: [class_id], references: [id], onDelete: SetNull)
   payments Payment[]
 
   @@index([student_id])
+  @@index([status])
+  @@index([class_id])
+  @@index([academic_year])
   @@map("fee_records")
 }
 
@@ -563,8 +571,17 @@ model Payment {
   receipt_number String?
   created_at     DateTime? @default(now())
 
-  fee_record FeeRecord @relation(fields: [fee_record_id], references: [id], onDelete: Cascade)
+  // Online / bank payments link back to the verified transaction that produced them (unique ⇒ a
+  // transaction can never produce two receipts). kind 'refund' rows carry a negative amount.
+  transaction_id    String?  @unique
+  kind              String   @default("payment")
+  recorded_by       String?
+  reverses_payment_id String?
 
+  fee_record FeeRecord @relation(fields: [fee_record_id], references: [id], onDelete: Cascade)
+  transaction PaymentTransaction?
+
+  @@index([fee_record_id])
   @@map("payments")
 }
 
@@ -660,6 +677,7 @@ model ForumMessage {
   thread      ForumThread @relation(fields: [thread_id], references: [id], onDelete: Cascade)
   author_user User?       @relation("ForumMessageAuthor", fields: [author_id], references: [id], onDelete: SetNull)
 
+  @@index([thread_id, created_at])
   @@map("forum_messages")
 }
 
@@ -833,4 +851,117 @@ model Notification {
   @@index([user_id, read_at])
   @@index([user_id, created_at])
   @@map("notifications")
+}
+
+// ── Payments ──────────────────────────────────────────────────────────────────
+// A PaymentTransaction is one attempt to pay (part of) an invoice (FeeRecord). It only affects the
+// invoice's balance once a VERIFIED provider result (or a finance officer, for bank transfers) marks it
+// 'successful' — at which point exactly one Payment (receipt) row is created. See src/payments/service.js.
+enum PaymentTxStatus {
+  initiated
+  pending
+  processing
+  successful
+  failed
+  cancelled
+  awaiting_verification
+  refunded
+  expired
+}
+
+model PaymentTransaction {
+  id               String          @id
+  reference        String          @unique   // shown to the student; used as the bank-transfer reference / provider order id
+  fee_record_id    String
+  student_id       String
+  amount           Float
+  currency         String
+  provider         String                    // orange_money | mtn_momo | bank_transfer | stripe
+  status           PaymentTxStatus @default(initiated)
+  provider_ref     String?                   // provider-side id (MTN referenceId, Orange pay_token, Stripe session id)
+  provider_txn_id  String?                   // provider's final financial transaction id
+  provider_secret  String?                   // per-transaction verification token (e.g. Orange notif_token); never sent to the client
+  payer_phone      String?
+  checkout_url     String?
+  idempotency_key  String?
+  failure_reason   String?
+  bank_reference   String?                   // reference written on the student's bank slip
+  receipt_name     String?
+  receipt_mime     String?
+  receipt_size     Int?
+  receipt_data     Bytes?                    // uploaded bank-transfer proof (pending until a finance officer verifies it)
+  initiated_by     String?
+  verified_by      String?
+  verified_at      DateTime?
+  expires_at       DateTime?
+  needs_review     Boolean         @default(false)
+  review_note      String?
+  refunded_amount  Float           @default(0)
+  payment_id       String?         @unique
+  created_at       DateTime        @default(now())
+  updated_at       DateTime        @default(now())
+
+  fee_record FeeRecord @relation(fields: [fee_record_id], references: [id], onDelete: Restrict)
+  student    Student   @relation(fields: [student_id], references: [id], onDelete: Restrict)
+  payment    Payment?  @relation(fields: [payment_id], references: [id], onDelete: SetNull)
+  events     PaymentEvent[]
+
+  @@unique([student_id, idempotency_key])
+  @@index([fee_record_id])
+  @@index([student_id, created_at])
+  @@index([status, created_at])
+  @@index([provider, status])
+  @@map("payment_transactions")
+}
+
+// Status history of a transaction (what changed, who/what changed it, and the provider payload that justified it).
+model PaymentEvent {
+  id             String    @id
+  transaction_id String
+  from_status    String?
+  to_status      String
+  source         String                      // student | provider_webhook | provider_poll | finance_officer | admin | system
+  actor_id       String?
+  actor_name     String?
+  note           String?
+  payload        Json?
+  created_at     DateTime  @default(now())
+
+  transaction PaymentTransaction @relation(fields: [transaction_id], references: [id], onDelete: Cascade)
+
+  @@index([transaction_id, created_at])
+  @@map("payment_events")
+}
+
+// Every provider notification we have received — unique (provider, event_id) makes re-delivery harmless.
+model PaymentWebhookEvent {
+  id           String    @id
+  provider     String
+  event_id     String
+  payload      Json?
+  outcome      String?
+  received_at  DateTime  @default(now())
+  processed_at DateTime?
+
+  @@unique([provider, event_id])
+  @@map("payment_webhook_events")
+}
+
+// Audit trail for sensitive finance actions: who, when, what changed and why.
+model FinanceAudit {
+  id          String   @id
+  actor_id    String?
+  actor_name  String?
+  actor_role  String?
+  action      String
+  target_type String
+  target_id   String
+  reason      String?
+  before      Json?
+  after       Json?
+  created_at  DateTime @default(now())
+
+  @@index([created_at])
+  @@index([target_type, target_id])
+  @@map("finance_audit")
 }

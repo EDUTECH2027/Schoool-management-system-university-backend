@@ -63,8 +63,41 @@ function deleteMessageFile(message) {
   fs.unlink(filePath, () => {});
 }
 
+// Without ?limit the whole thread is returned (legacy behaviour). With ?limit=N the NEWEST N messages are
+// returned (still oldest→newest); pass ?before=<message id> to page back through older ones. The response
+// header X-Has-More says whether older messages exist.
 router.get('/threads/:id/messages', authenticate, async (req, res) => {
-  res.json(await req.db.forumMessage.findMany({ where: { thread_id: req.params.id }, orderBy: { created_at: 'asc' } }));
+  const where = { thread_id: req.params.id };
+  const limit = Math.min(Math.max(parseInt(req.query.limit, 10) || 0, 0), 200);
+  if (!limit) return res.json(await req.db.forumMessage.findMany({ where, orderBy: { created_at: 'asc' } }));
+  if (req.query.before) {
+    const ref = await req.db.forumMessage.findFirst({ where: { id: String(req.query.before), thread_id: req.params.id }, select: { created_at: true } });
+    if (ref?.created_at) where.created_at = { lt: ref.created_at };
+  }
+  const rows = await req.db.forumMessage.findMany({ where, orderBy: { created_at: 'desc' }, take: limit + 1 });
+  const hasMore = rows.length > limit;
+  res.setHeader('X-Has-More', hasMore ? '1' : '0');
+  res.json(rows.slice(0, limit).reverse());
+});
+
+// Media shared in a thread (images / videos), newest first, cursor-paginated — feeds the shared gallery.
+router.get('/threads/:id/media', authenticate, async (req, res) => {
+  const limit = Math.min(Math.max(parseInt(req.query.limit, 10) || 24, 1), 60);
+  const kind = req.query.kind === 'image' || req.query.kind === 'video' ? req.query.kind : null;
+  const where = { thread_id: req.params.id, type: kind ? kind : { in: ['image', 'video'] } };
+  if (req.query.cursor) {
+    const ref = await req.db.forumMessage.findFirst({ where: { id: String(req.query.cursor), thread_id: req.params.id }, select: { created_at: true } });
+    if (ref?.created_at) where.created_at = { lt: ref.created_at };
+  }
+  const rows = await req.db.forumMessage.findMany({
+    where, orderBy: { created_at: 'desc' }, take: limit + 1,
+    select: { id: true, type: true, image_url: true, video_url: true, author: true, created_at: true },
+  });
+  const page = rows.slice(0, limit);
+  res.json({
+    items: page.map(m => ({ id: m.id, kind: m.type, url: m.image_url || m.video_url, author: m.author, created_at: m.created_at })),
+    next: rows.length > limit ? page[page.length - 1].id : null,
+  });
 });
 
 router.post('/threads/:id/messages', authenticate, async (req, res) => {

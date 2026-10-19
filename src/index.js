@@ -4,6 +4,7 @@ const path      = require('path');
 const express   = require('express');
 const cors      = require('cors');
 const helmet    = require('helmet');
+const compression = require('compression');
 const morgan    = require('morgan');
 const bcrypt    = require('bcryptjs');
 const { v4: uuid } = require('uuid');
@@ -64,6 +65,8 @@ const portalTeacherRouter = require('./routes/portal/teacher');
 const portalStudentRouter = require('./routes/portal/student');
 const portalParentRouter  = require('./routes/portal/parent');
 const elearningRouter    = require('./routes/elearning');
+const paymentsRouter     = require('./routes/payments');
+const financeRouter      = require('./routes/finance');
 
 // ── Platform (Super Admin) routes ───────────────────────────────────────────────
 const platformDashboardRouter     = require('./routes/platform/dashboard');
@@ -86,11 +89,18 @@ app.use(helmet({ crossOriginResourcePolicy: false }));
 app.use(cors({
   origin: (origin, cb) => cb(null, true), // all origins allowed (desktop + dev)
   credentials: true,
+  exposedHeaders: ['X-Has-More'],
 }));
+app.use(compression());   // gzip JSON/text responses (images and other pre-compressed types are skipped)
 app.use(morgan('dev'));
+// Provider webhooks first: Stripe needs the raw request body for signature verification.
+require('./routes/paymentWebhooks').mount(app);
 app.use(express.json({ limit: '10mb' }));
 app.use(express.urlencoded({ extended: true }));
-app.use('/uploads', express.static(require('./utils/forumUploads').UPLOADS_ROOT));
+// Thumbnails first (/uploads/_t/<width>/…), then the originals. Stored names are random UUIDs, so a given
+// URL's content never changes → cache for a year.
+app.get('/uploads/_t/:width/*', require('./utils/thumbnails').handler);
+app.use('/uploads', express.static(require('./utils/forumUploads').UPLOADS_ROOT, { maxAge: '365d', immutable: true }));
 
 // ── Routes ────────────────────────────────────────────────────────────────────
 app.use('/api/auth',          authRouter);
@@ -122,6 +132,8 @@ app.use('/api/portal/teacher',   portalTeacherRouter);
 app.use('/api/portal/student',   portalStudentRouter);
 app.use('/api/portal/parent',    portalParentRouter);
 app.use('/api/elearning',         elearningRouter);
+app.use('/api/payments',          paymentsRouter);
+app.use('/api/finance',           financeRouter);
 
 // ── Platform (Super Admin) routes ───────────────────────────────────────────────
 app.use('/api/platform/dashboard',     platformDashboardRouter);
@@ -163,6 +175,7 @@ bootstrap()
       console.log(`   Health: http://localhost:${PORT}/api/health`);
       console.log(`   Docs:   see README for full endpoint list\n`);
       if (process.env.ELEARNING_REMINDERS !== 'off') require('./utils/reminders').start();
+      if (process.env.PAYMENT_RECONCILER !== 'off') require('./payments/reconciler').start();
       // Signal Electron main process that the server is ready
       if (process.send) process.send({ type: 'ready', port: Number(PORT) });
     });

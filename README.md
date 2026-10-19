@@ -134,3 +134,16 @@ For self-hosting, enable JWT auth in Prosody (`authentication = "token"`, same
 `scripts/test-elearning.js` is an end-to-end suite (≈155 checks) for scheduling, conflicts, permissions, join tokens,
 attendance, reminders, uploads and downloads. It needs a **throwaway local Postgres** (it refuses to run against
 a remote DB) and a running API — see the header of the file for the exact steps.
+
+## Payments, performance and dark mode
+
+* **Payments** — student payment dashboard, finance-officer portal, Orange Money / MTN MoMo / bank transfer / Stripe adapters,
+  verification, reconciliation, receipts, audit log. Architecture, provider prerequisites, env vars and limitations:
+  **[docs/PAYMENTS.md](docs/PAYMENTS.md)**. Routes: `/api/payments/*` (students), `/api/finance/*` (finance officers and administrators),
+  `/api/payments/webhooks/*` (providers). New role: `finance_officer`.
+* **Images** — `GET /uploads/_t/<64|128|256|512|1024>/<school>/<folder>/<file>` returns a cached WebP thumbnail (sharp). Originals stay at
+  `/uploads/…`. Both are served with a 1-year immutable cache header. Thumbnails are cached in `backend/.cache/thumbs` (safe to delete).
+* **Forum** — `GET /api/forums/threads/:id/messages?limit=N[&before=<id>]` pages through messages (`X-Has-More` header; without `limit` the whole
+  thread is returned as before). `GET /api/forums/threads/:id/media` feeds the shared gallery (cursor pagination, `kind=image|video`).
+* **Compression** — JSON/text responses are gzip-compressed; new indexes on `fee_records`, `students`, `payments`, `forum_messages`, `payment_transactions`.
+* **Tests** — `scripts/test-elearning.js`, `scripts/test-payments.js`, `scripts/test-media.js` (all need a throwaway local Postgres; they refuse to run elsewhere).
