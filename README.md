@@ -81,3 +81,56 @@ backend/
 │   └── school.db         SQLite database (auto-created)
 └── .env                  PORT, JWT_SECRET, DB_PATH, FRONTEND_URL
 ```
+
+## E-Learning (live classes)
+
+Routes under `/api/elearning` (teacher, student, admin roles). A "course" is
+Class + subject + Teacher taken from the timetable (`teacher_schedule`); a student
+is enrolled in every course of their own class.
+
+| Method | Path | Who | Description |
+|--------|------|-----|-------------|
+| GET  | /elearning/courses | all | Courses the caller teaches / attends |
+| GET  | /elearning/sessions | all | Role-scoped class list |
+| POST | /elearning/sessions | teacher | Schedule (or `instant: true`) — 409 on teacher/class time conflicts |
+| PUT  | /elearning/sessions/:id | teacher | Edit / reschedule (scheduled only) |
+| POST | /elearning/sessions/:id/{start,end,cancel} | teacher (cancel: admin too) | Lifecycle |
+| POST | /elearning/sessions/:id/join | teacher, student | Returns a signed Jitsi room token; opens an attendance record |
+| POST | /elearning/sessions/:id/{heartbeat,leave} | teacher, student | Server-side attendance tracking |
+| GET  | /elearning/sessions/:id/attendance | teacher (own), admin | Attendance report incl. absentees |
+
+**Setup:** apply the migration (`prisma migrate deploy` runs automatically on server
+boot for every school), then configure Jitsi via the `JITSI_*` variables in
+`.env.example`. The public `meet.jit.si` cannot be used: it does not honour
+server-signed JWTs, so moderator rights and access control would not be enforced.
+For self-hosting, enable JWT auth in Prosody (`authentication = "token"`, same
+`app_id` / `app_secret`, `allow_empty_token = false`).
+
+### E-Learning: materials, notifications, reminders
+
+| Method | Path | Who | Description |
+|--------|------|-----|-------------|
+| GET  | /elearning/resources | all | Materials visible to the caller (students: own class only) |
+| POST | /elearning/resources | teacher | multipart `file` **or** `url`; fields `class_id, subject_name, title, topic?, session_id?` |
+| GET  | /elearning/resources/:id/file[?inline=1] | enrolled students, owner, admin | Authorised download / preview |
+| DELETE | /elearning/resources/:id | owner teacher, admin | Remove material and file |
+| GET  | /elearning/notifications | all | Latest 30 + unread count |
+| POST | /elearning/notifications/read | all | `{ids?}` — omit to mark all read |
+
+* **Uploads:** allow-list of extensions (pdf, ppt(x), doc(x), xls(x), txt, csv, zip, png/jpg/gif, mp4/webm, mp3);
+  HTML/SVG/executables are rejected. Size cap `ELEARNING_MAX_UPLOAD_MB` (default 10). File bytes are stored in the
+  database (`elearning_resources.file_data`) so they persist on ephemeral hosts such as Render's free plan, and are
+  served only through the authorised download endpoint. Large videos should be shared as links instead.
+* **Notifications are in-app only** (bell icon): class scheduled / rescheduled / cancelled / live, a reminder
+  ~15 min before start (job in `src/utils/reminders.js`, checked every minute), and new materials.
+  **No email/SMS is sent** — the project has no SMTP integration. Adding one means calling a mailer from
+  `src/utils/notify.js`.
+* **Not implemented:** session recordings (needs a Jitsi recording backend such as Jibri/JaaS recording and a
+  storage policy), saved chat history (chat lives only inside the Jitsi call), in-app slide viewer
+  (teachers present with Jitsi screen share; materials are shared as files).
+
+### Tests
+
+`scripts/test-elearning.js` is an end-to-end suite (≈155 checks) for scheduling, conflicts, permissions, join tokens,
+attendance, reminders, uploads and downloads. It needs a **throwaway local Postgres** (it refuses to run against
+a remote DB) and a running API — see the header of the file for the exact steps.

@@ -63,6 +63,7 @@ const withdrawalsRouter  = require('./routes/withdrawals');
 const portalTeacherRouter = require('./routes/portal/teacher');
 const portalStudentRouter = require('./routes/portal/student');
 const portalParentRouter  = require('./routes/portal/parent');
+const elearningRouter    = require('./routes/elearning');
 
 // ── Platform (Super Admin) routes ───────────────────────────────────────────────
 const platformDashboardRouter     = require('./routes/platform/dashboard');
@@ -120,6 +121,7 @@ app.use('/api/migrate',          migrateRouter);
 app.use('/api/portal/teacher',   portalTeacherRouter);
 app.use('/api/portal/student',   portalStudentRouter);
 app.use('/api/portal/parent',    portalParentRouter);
+app.use('/api/elearning',         elearningRouter);
 
 // ── Platform (Super Admin) routes ───────────────────────────────────────────────
 app.use('/api/platform/dashboard',     platformDashboardRouter);
@@ -160,6 +162,7 @@ bootstrap()
       console.log(`\n🚀  School Management API running on http://localhost:${PORT}`);
       console.log(`   Health: http://localhost:${PORT}/api/health`);
       console.log(`   Docs:   see README for full endpoint list\n`);
+      if (process.env.ELEARNING_REMINDERS !== 'off') require('./utils/reminders').start();
       // Signal Electron main process that the server is ready
       if (process.send) process.send({ type: 'ready', port: Number(PORT) });
     });
