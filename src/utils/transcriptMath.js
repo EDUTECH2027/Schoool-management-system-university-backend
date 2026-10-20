@@ -8,6 +8,7 @@
 
 // Mirrors the letter grades gradeFor() in routes/marks.js produces (A+, A, B,
 // C, D, F) — that computation is untouched; this is a points layer on top.
+const { getScheme } = require('../academics/gradingScheme');
 const GRADE_POINTS = { 'A+': 4.0, 'A': 4.0, 'B': 3.0, 'C': 2.0, 'D': 1.0, 'F': 0.0 };
 function pointsForGrade(grade) {
   return GRADE_POINTS[grade] ?? 0;
@@ -31,11 +32,11 @@ function computeGpa(rows) {
 // creditHoursBySubjectId: { [subjectId]: number } — current Subject.credit_hours.
 // termsById: { [termId]: { name, academic_year_label, start_date } } — built by
 // the caller (joining Term + AcademicYear); not a schema shape.
-function buildTranscript(marks, creditHoursBySubjectId, termsById) {
+function buildTranscript(marks, creditHoursBySubjectId, termsById, pointsFor = pointsForGrade) {
   const rows = marks.map(m => ({
     ...m,
     credit_hours: creditHoursBySubjectId[m.subject_id] ?? 3,
-    grade_points: pointsForGrade(m.grade),
+    grade_points: pointsFor(m.grade),
   }));
 
   const groups = new Map();
@@ -70,7 +71,9 @@ function buildTranscript(marks, creditHoursBySubjectId, termsById) {
 // dashboard widgets so they're never stale even if no Transcript has been
 // generated/published yet.
 async function getLiveGpaSummary(db, { studentId }) {
-  const marks = await db.mark.findMany({ where: { student_id: studentId } });
+  // Only PUBLISHED marks count: a draft or unapproved mark must never move someone's GPA.
+  const marks = await db.mark.findMany({ where: { student_id: studentId, status: 'published' } });
+  const scheme = await getScheme(db);
   if (marks.length === 0) return { byTerm: [], cumulative: { gpa: 0, totalCreditHours: 0, totalQualityPoints: 0, courseCount: 0 } };
 
   const subjectIds = [...new Set(marks.map(m => m.subject_id))];
@@ -86,7 +89,7 @@ async function getLiveGpaSummary(db, { studentId }) {
     name: t.name, academic_year_label: t.academic_year?.label ?? null, start_date: t.start_date,
   }]));
 
-  return buildTranscript(marks, creditHoursBySubjectId, termsById);
+  return buildTranscript(marks, creditHoursBySubjectId, termsById, scheme.pointsFor);
 }
 
 module.exports = { pointsForGrade, computeGpa, buildTranscript, getLiveGpaSummary, GRADE_POINTS };

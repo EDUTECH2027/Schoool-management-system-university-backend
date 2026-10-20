@@ -52,7 +52,7 @@ router.get('/marks', ...guard, async (req, res) => {
   const { termId } = req.query;
   const where = { student_id: sid(req) };
   if (termId) where.term_id = termId;
-  res.json(await req.db.mark.findMany({ where, orderBy: { subject_name: 'asc' } }));
+  res.json(await req.db.mark.findMany({ where: { ...where, status: 'published' }, orderBy: { subject_name: 'asc' } }));
 });
 
 // GET /api/portal/student/attendance?from=&to=

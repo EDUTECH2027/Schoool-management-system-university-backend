@@ -3,7 +3,8 @@ const { v4: uuid } = require('uuid');
 const authenticate = require('../../middleware/auth');
 const authorize = require('../../middleware/authorize');
 const { sortByDay } = require('../../utils/dayOrder');
-const { gradeFor, totalFor, clampScore } = require('../../utils/grading');
+const { getScheme } = require('../../academics/gradingScheme');
+const { saveMarks } = require('../../academics/results');
 
 const guard = [authenticate, authorize('teacher', 'head_teacher', 'super_admin')];
 const tid = req => req.user.teacher_id;
@@ -80,22 +81,14 @@ router.post('/marks', ...guard, async (req, res) => {
   const openSession = await req.db.marksSession.findFirst({ where: { start_at: { lte: now }, end_at: { gte: now } } });
   if (!openSession) return res.status(403).json({ error: 'Marks filling is currently closed. Ask an admin to open a new session.' });
 
-  await req.db.$transaction(marks.map(m => {
-    const ca = clampScore(m.ca_score);
-    const exam = clampScore(m.exam_score);
-    const total = totalFor(ca, exam);
-    const { grade, remark } = gradeFor(total);
-    return req.db.mark.upsert({
-      where: { marks_student_subject_term: { student_id: m.student_id, subject_id: m.subject_id, term_id: termId } },
-      update: { ca_score: ca, exam_score: exam, total_score: total, grade: m.grade || grade, remark: m.remark || remark, updated_at: new Date() },
-      create: {
-        id: uuid(), student_id: m.student_id, student_name: m.student_name || null, student_number: m.student_number || null,
-        subject_id: m.subject_id, subject_name: m.subject_name || null, term_id: termId, class_id: classId,
-        ca_score: ca, exam_score: exam, total_score: total, grade: m.grade || grade, remark: m.remark || remark,
-      },
-    });
-  }));
-  res.json({ saved: marks.length });
+  // Lecturer entries are DRAFTS (grades computed from the configured scheme); they become visible to students
+  // only after being submitted for validation, approved and published (see routes/results.js).
+  const scheme = await getScheme(req.db);
+  const { saved, errors } = await saveMarks(req.db, scheme, marks.map(m => ({
+    studentId: m.student_id, subjectId: m.subject_id, termId, classId, studentName: m.student_name, studentNumber: m.student_number,
+    subjectName: m.subject_name, caScore: m.ca_score, examScore: m.exam_score, examAbsent: m.exam_absent,
+  })), req.user);
+  res.json({ saved, ...(errors.length && { skipped: errors }) });
 });
 
 // GET /api/portal/teacher/student-attendance?classId=&date=

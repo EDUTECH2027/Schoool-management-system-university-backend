@@ -15,7 +15,8 @@
     "migrate:data": "node scripts/migrate-to-postgres.js",
     "migrate:verify": "node scripts/verify-migration.js",
     "verify:auth": "node scripts/verify-auth.js",
-    "smoke-test": "node scripts/smoke-test.js"
+    "smoke-test": "node scripts/smoke-test.js",
+    "test:academics": "node scripts/test-academics.js"
   },
   "dependencies": {
     "@messagebird/sdk": "^0.29.0",
@@ -34,6 +35,7 @@
     "multer": "^2.2.0",
     "pg": "^8.22.0",
     "prisma": "6.19.3",
+    "qrcode": "^1.5.4",
     "sharp": "^0.35.5",
     "stripe": "^23.0.0",
     "uuid": "^9.0.1"

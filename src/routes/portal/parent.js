@@ -44,7 +44,7 @@ router.get('/children/:sid/marks', ...guard, async (req, res) => {
   const { termId } = req.query;
   const where = { student_id: req.params.sid };
   if (termId) where.term_id = termId;
-  res.json(await req.db.mark.findMany({ where, orderBy: { subject_name: 'asc' } }));
+  res.json(await req.db.mark.findMany({ where: { ...where, status: 'published' }, orderBy: { subject_name: 'asc' } }));
 });
 
 // GET /api/portal/parent/children/:sid/attendance?from=&to=

@@ -2,6 +2,7 @@ const router = require('express').Router();
 const authenticate = require('../middleware/auth');
 const { v4: uuid } = require('uuid');
 const { buildTranscript, computeGpa, pointsForGrade } = require('../utils/transcriptMath');
+const { getScheme } = require('../academics/gradingScheme');
 
 const ENTRIES_INCLUDE = { entries: { orderBy: [{ term_id: 'asc' }, { subject_name: 'asc' }] } };
 
@@ -20,7 +21,9 @@ router.post('/generate', authenticate, async (req, res) => {
   if (students.length === 0) return res.status(422).json({ error: 'No active students in this speciality' });
 
   const studentIds = students.map(s => s.id);
-  const allMarks = await req.db.mark.findMany({ where: { student_id: { in: studentIds } } });
+  const scheme = await getScheme(req.db);
+  // published marks only — a transcript is an official document built from validated results
+  const allMarks = await req.db.mark.findMany({ where: { student_id: { in: studentIds }, status: 'published' } });
 
   const subjectIds = [...new Set(allMarks.map(m => m.subject_id))];
   const termIds = [...new Set(allMarks.map(m => m.term_id))];
@@ -46,7 +49,7 @@ router.post('/generate', authenticate, async (req, res) => {
     await req.db.$transaction(async (tx) => {
       for (const student of students) {
         const studentMarks = marksByStudent[student.id] || [];
-        const { byTerm, cumulative } = buildTranscript(studentMarks, creditHoursBySubjectId, termsById);
+        const { byTerm, cumulative } = buildTranscript(studentMarks, creditHoursBySubjectId, termsById, scheme.pointsFor);
         const rows = byTerm.flatMap(t => t.courses);
 
         const existing = await tx.transcript.findUnique({ where: { student_id: student.id } });

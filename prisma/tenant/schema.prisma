@@ -15,6 +15,7 @@ enum Role {
   student
   parent
   finance_officer
+  academic_officer
 }
 
 enum Gender {
@@ -193,6 +194,9 @@ model Term {
   academic_year      AcademicYear      @relation(fields: [academic_year_id], references: [id], onDelete: Cascade)
   marks              Mark[]
   transcript_entries TranscriptEntry[]
+  offerings          CourseOffering[]
+  registration_periods RegistrationPeriod[]
+  exams              ExamSession[]
 
   @@map("terms")
 }
@@ -203,6 +207,7 @@ model GradeLevel {
   sort_order Int    @default(0)
 
   classes Class[]
+  subjects Subject[]
 
   @@map("grade_levels")
 }
@@ -213,9 +218,25 @@ model Subject {
   code         String @unique
   coefficient  Float  @default(1)
   credit_hours Float  @default(3)
+  // Course-catalogue fields (a Subject IS the catalogue entry; credit_hours = credit units)
+  department_id String?
+  level_id      String?
+  semester      TermName?
+  description   String?
+  is_active     Boolean @default(true)
+
+  department    Department?          @relation(fields: [department_id], references: [id], onDelete: SetNull)
+  level         GradeLevel?          @relation(fields: [level_id], references: [id], onDelete: SetNull)
+  prerequisites CoursePrerequisite[] @relation("CourseOf")
+  required_by   CoursePrerequisite[] @relation("PrereqOf")
+  curriculum    ProgrammeCourse[]
+  offerings     CourseOffering[]
+  exams         ExamSession[]
 
   marks              Mark[]
   transcript_entries TranscriptEntry[]
+
+  @@index([department_id])
 
   @@map("subjects")
 }
@@ -247,6 +268,8 @@ model Teacher {
   documents         TeacherDocument[]
   elearning_sessions ElearningSession[]
   elearning_resources ElearningResource[]
+  offerings          CourseOffering[]
+  invigilations      ExamInvigilator[]
 
   @@map("teachers")
 }
@@ -274,8 +297,10 @@ model Class {
   class_teacher_id   String?
   class_teacher_name String?
   enrolled           Int       @default(0)
+  programme_id       String?
   created_at         DateTime? @default(now())
 
+  programme          Programme?         @relation(fields: [programme_id], references: [id], onDelete: SetNull)
   grade_level        GradeLevel?        @relation(fields: [grade_level_id], references: [id])
   class_teacher      Teacher?           @relation("ClassTeacher", fields: [class_teacher_id], references: [id], onDelete: SetNull)
   students           Student[]
@@ -287,6 +312,7 @@ model Class {
   elearning_sessions ElearningSession[]
   elearning_resources ElearningResource[]
 
+  @@index([programme_id])
   @@map("classes")
 }
 
@@ -314,6 +340,7 @@ model Student {
   guardian_relationship   String?
   admission_date          String?
   is_active               Boolean   @default(true)
+  academic_status         String    @default("active")   // active | graduated | withdrawn | suspended
   user_id                 String?
   created_at              DateTime? @default(now())
   updated_at              DateTime? @default(now())
@@ -333,6 +360,12 @@ model Student {
   @@index([class_id])
   @@index([is_active])
   payment_transactions PaymentTransaction[]
+  enrollments          CourseEnrollment[]
+  exam_entries         ExamCandidate[]
+  grade_appeals        GradeAppeal[]
+  enrollment_history   StudentEnrollmentHistory[]
+  progression          ProgressionDecision[]
+  official_documents   OfficialDocument[]
   @@map("students")
 }
 
@@ -448,9 +481,22 @@ model Mark {
   remark         String?
   resit_score    Float?
   resit_grade    String?
+  // Results workflow: draft → submitted (by lecturer) → approved → published (visible to students)
+  status         MarkStatus @default(draft)
+  exam_absent    Boolean   @default(false)
+  offering_id    String?
+  entered_by     String?
+  submitted_at   DateTime?
+  submitted_by   String?
+  approved_at    DateTime?
+  approved_by    String?
+  published_at   DateTime?
+  published_by   String?
   created_at     DateTime? @default(now())
   updated_at     DateTime? @default(now())
 
+  history MarkHistory[]
+  appeals GradeAppeal[]
   student Student @relation(fields: [student_id], references: [id], onDelete: Cascade)
   subject Subject @relation(fields: [subject_id], references: [id], onDelete: Cascade)
   term    Term    @relation(fields: [term_id], references: [id], onDelete: Cascade)
@@ -459,6 +505,8 @@ model Mark {
   @@unique([student_id, subject_id, term_id], name: "marks_student_subject_term")
   @@index([student_id])
   @@index([term_id])
+  @@index([status])
+  @@index([subject_id, term_id])
   @@map("marks")
 }
 
@@ -964,4 +1012,407 @@ model FinanceAudit {
   @@index([created_at])
   @@index([target_type, target_id])
   @@map("finance_audit")
+}
+
+// ══ Academic structure ═══════════════════════════════════════════════════════
+model Faculty {
+  id          String   @id
+  name        String   @unique
+  code        String   @unique
+  description String?
+  created_at  DateTime @default(now())
+
+  departments Department[]
+
+  @@map("faculties")
+}
+
+model Department {
+  id         String   @id
+  faculty_id String
+  name       String
+  code       String
+  head_name  String?
+  created_at DateTime @default(now())
+
+  faculty    Faculty     @relation(fields: [faculty_id], references: [id], onDelete: Restrict)
+  programmes Programme[]
+  subjects   Subject[]
+
+  @@unique([faculty_id, code])
+  @@unique([faculty_id, name])
+  @@map("departments")
+}
+
+// A Programme is what a student studies; Classes are its cohorts (per level / intake).
+model Programme {
+  id               String   @id
+  department_id    String
+  name             String
+  code             String   @unique
+  award            String?                // Licence, Master, Doctorat, BTS…
+  duration_years   Int      @default(3)
+  credits_required Float?                 // credits needed to graduate
+  is_active        Boolean  @default(true)
+  created_at       DateTime @default(now())
+
+  department Department           @relation(fields: [department_id], references: [id], onDelete: Restrict)
+  classes    Class[]
+  curriculum ProgrammeCourse[]
+  periods    RegistrationPeriod[]
+
+  @@index([department_id])
+  @@map("programmes")
+}
+
+model CoursePrerequisite {
+  subject_id      String
+  prerequisite_id String
+
+  subject      Subject @relation("CourseOf", fields: [subject_id], references: [id], onDelete: Cascade)
+  prerequisite Subject @relation("PrereqOf", fields: [prerequisite_id], references: [id], onDelete: Cascade)
+
+  @@id([subject_id, prerequisite_id])
+  @@map("course_prerequisites")
+}
+
+// Which courses belong to a programme, at which level and semester.
+model ProgrammeCourse {
+  id           String   @id
+  programme_id String
+  subject_id   String
+  level_id     String?
+  semester     TermName
+  kind         String   @default("core")   // core | elective
+
+  programme Programme @relation(fields: [programme_id], references: [id], onDelete: Cascade)
+  subject   Subject   @relation(fields: [subject_id], references: [id], onDelete: Cascade)
+
+  @@unique([programme_id, subject_id])
+  @@index([subject_id])
+  @@map("programme_courses")
+}
+
+// A course taught in a given semester (term) by a lecturer: the unit students register for.
+model CourseOffering {
+  id         String   @id
+  subject_id String
+  term_id    String
+  teacher_id String?
+  section    String   @default("A")
+  capacity   Int?
+  is_open    Boolean  @default(true)
+  created_at DateTime @default(now())
+
+  subject     Subject            @relation(fields: [subject_id], references: [id], onDelete: Cascade)
+  term        Term               @relation(fields: [term_id], references: [id], onDelete: Cascade)
+  teacher     Teacher?           @relation(fields: [teacher_id], references: [id], onDelete: SetNull)
+  slots       OfferingSlot[]
+  enrollments CourseEnrollment[]
+  exams       ExamSession[]
+
+  @@unique([subject_id, term_id, section])
+  @@index([term_id])
+  @@index([teacher_id])
+  @@map("course_offerings")
+}
+
+// Weekly meeting slot of an offering — used for timetable-conflict detection at registration.
+model OfferingSlot {
+  id          String @id
+  offering_id String
+  day         Day
+  period_key  String
+  room        String?
+
+  offering CourseOffering @relation(fields: [offering_id], references: [id], onDelete: Cascade)
+
+  @@unique([offering_id, day, period_key])
+  @@map("offering_slots")
+}
+
+model RegistrationPeriod {
+  id               String    @id
+  term_id          String
+  programme_id     String?                 // null = every programme
+  level_id         String?                 // null = every level
+  name             String?
+  opens_at         DateTime
+  closes_at        DateTime
+  add_drop_until   DateTime?               // adding/dropping allowed until (defaults to closes_at)
+  min_credits      Float     @default(0)
+  max_credits      Float     @default(30)
+  allow_exceptions Boolean   @default(true)
+  created_by       String?
+  created_at       DateTime  @default(now())
+
+  term      Term       @relation(fields: [term_id], references: [id], onDelete: Cascade)
+  programme Programme? @relation(fields: [programme_id], references: [id], onDelete: Cascade)
+
+  @@index([term_id, opens_at])
+  @@map("registration_periods")
+}
+
+enum EnrollmentStatus {
+  registered
+  pending_approval
+  rejected
+  dropped
+}
+
+model CourseEnrollment {
+  id               String           @id
+  student_id       String
+  offering_id      String
+  term_id          String
+  status           EnrollmentStatus @default(registered)
+  credits          Float
+  kind             String           @default("regular")   // regular | retake | exception
+  exception_reason String?
+  registered_at    DateTime         @default(now())
+  dropped_at       DateTime?
+  decision_by      String?
+  decision_at      DateTime?
+  decision_note    String?
+  created_by       String?
+
+  student  Student        @relation(fields: [student_id], references: [id], onDelete: Cascade)
+  offering CourseOffering @relation(fields: [offering_id], references: [id], onDelete: Cascade)
+
+  @@unique([student_id, offering_id])
+  @@index([student_id, term_id])
+  @@index([offering_id, status])
+  @@map("course_enrollments")
+}
+
+// ══ Grading, results workflow, exams ════════════════════════════════════════════
+enum MarkStatus {
+  draft
+  submitted
+  approved
+  published
+}
+
+model GradingScheme {
+  id          String   @id
+  name        String
+  is_active   Boolean  @default(false)
+  ca_weight   Float    @default(40)     // percent of the total coming from continuous assessment
+  exam_weight Float    @default(60)
+  pass_mark   Float    @default(50)     // course pass mark (out of 100)
+  resit_cap   Float?                    // max total after a resit (null = no cap)
+  created_at  DateTime @default(now())
+
+  bands GradeBand[]
+
+  @@map("grading_schemes")
+}
+
+model GradeBand {
+  id        String  @id
+  scheme_id String
+  min_score Float
+  grade     String
+  points    Float
+  remark    String?
+  is_pass   Boolean @default(true)
+
+  scheme GradingScheme @relation(fields: [scheme_id], references: [id], onDelete: Cascade)
+
+  @@unique([scheme_id, grade])
+  @@map("grade_bands")
+}
+
+// Every change to a mark and every approval step — nothing is ever silently overwritten.
+model MarkHistory {
+  id          String   @id
+  mark_id     String
+  action      String                      // save | submit | approve | publish | reject | reopen | appeal_upheld
+  from_status String?
+  to_status   String?
+  before      Json?
+  after       Json?
+  reason      String?
+  actor_id    String?
+  actor_name  String?
+  actor_role  String?
+  created_at  DateTime @default(now())
+
+  mark Mark @relation(fields: [mark_id], references: [id], onDelete: Cascade)
+
+  @@index([mark_id, created_at])
+  @@map("mark_history")
+}
+
+model ExamSession {
+  id          String   @id
+  subject_id  String
+  term_id     String
+  offering_id String?
+  title       String
+  kind        String   @default("final")      // final | midterm | resit
+  date        String                           // YYYY-MM-DD
+  start_time  String                           // HH:MM
+  end_time    String
+  room        String?
+  status      String   @default("scheduled")   // scheduled | held | cancelled
+  created_by  String?
+  created_at  DateTime @default(now())
+
+  subject      Subject           @relation(fields: [subject_id], references: [id], onDelete: Cascade)
+  term         Term              @relation(fields: [term_id], references: [id], onDelete: Cascade)
+  offering     CourseOffering?   @relation(fields: [offering_id], references: [id], onDelete: SetNull)
+  invigilators ExamInvigilator[]
+  candidates   ExamCandidate[]
+
+  @@index([term_id, date])
+  @@map("exam_sessions")
+}
+
+model ExamInvigilator {
+  exam_id    String
+  teacher_id String
+
+  exam    ExamSession @relation(fields: [exam_id], references: [id], onDelete: Cascade)
+  teacher Teacher     @relation(fields: [teacher_id], references: [id], onDelete: Cascade)
+
+  @@id([exam_id, teacher_id])
+  @@map("exam_invigilators")
+}
+
+model ExamCandidate {
+  id                 String    @id
+  exam_id            String
+  student_id         String
+  eligible           Boolean   @default(true)
+  ineligible_reasons Json?
+  attendance         String?                   // present | absent (null = not recorded yet)
+  override_by        String?
+  override_reason    String?
+  recorded_by        String?
+  recorded_at        DateTime?
+
+  exam    ExamSession @relation(fields: [exam_id], references: [id], onDelete: Cascade)
+  student Student     @relation(fields: [student_id], references: [id], onDelete: Cascade)
+
+  @@unique([exam_id, student_id])
+  @@index([student_id])
+  @@map("exam_candidates")
+}
+
+model GradeAppeal {
+  id            String    @id
+  mark_id       String
+  student_id    String
+  reason        String
+  status        String    @default("submitted")   // submitted | under_review | upheld | rejected
+  reviewed_by   String?
+  decision_note String?
+  new_ca        Float?
+  new_exam      Float?
+  created_at    DateTime  @default(now())
+  decided_at    DateTime?
+
+  mark    Mark    @relation(fields: [mark_id], references: [id], onDelete: Cascade)
+  student Student @relation(fields: [student_id], references: [id], onDelete: Cascade)
+
+  @@index([student_id])
+  @@index([status])
+  @@map("grade_appeals")
+}
+
+// Single row ("main"): rules the university configures instead of us hardcoding them.
+model AcademicSettings {
+  id                      String   @id @default("main")
+  exam_min_attendance_pct Float?                       // null = attendance not required for exam eligibility
+  exam_fee_rule           String   @default("none")    // none | no_overdue | min_paid_pct
+  exam_min_paid_pct       Float    @default(0)
+  progression             Json?                        // see utils/progression.js for the shape + defaults
+  updated_by              String?
+  updated_at              DateTime @default(now())
+
+  @@map("academic_settings")
+}
+
+model ProgressionDecision {
+  id               String    @id
+  student_id       String
+  academic_year_id String
+  programme_id     String?
+  level_id         String?
+  outcome          String                         // promoted | repeat | carryover | probation | eligible_graduation
+  metrics          Json
+  status           String    @default("proposed") // proposed | approved | applied | rejected
+  target_class_id  String?
+  decided_by       String?
+  decided_at       DateTime?
+  note             String?
+  created_at       DateTime  @default(now())
+
+  student Student @relation(fields: [student_id], references: [id], onDelete: Cascade)
+
+  @@unique([student_id, academic_year_id])
+  @@index([academic_year_id, status])
+  @@map("progression_decisions")
+}
+
+// Where a student was, year by year. Written whenever their cohort changes; never edited.
+model StudentEnrollmentHistory {
+  id               String    @id
+  student_id       String
+  academic_year_id String?
+  class_id         String?
+  class_name       String?
+  programme_id     String?
+  programme_name   String?
+  level_name       String?
+  started_at       DateTime  @default(now())
+  ended_at         DateTime?
+  reason           String?
+
+  student Student @relation(fields: [student_id], references: [id], onDelete: Cascade)
+
+  @@index([student_id, started_at])
+  @@map("student_enrollment_history")
+}
+
+// Issued official documents (transcript, statement of results, enrolment certificate…) with a public verification code.
+model OfficialDocument {
+  id               String    @id
+  code             String    @unique
+  type             String
+  student_id       String
+  academic_year_id String?
+  term_id          String?
+  payload          Json
+  status           String    @default("issued")   // issued | revoked
+  issued_by        String?
+  issued_by_name   String?
+  issued_at        DateTime  @default(now())
+  revoked_at       DateTime?
+  revoked_reason   String?
+
+  student Student @relation(fields: [student_id], references: [id], onDelete: Cascade)
+
+  @@index([student_id, type])
+  @@map("official_documents")
+}
+
+// Audit trail for academic/administrative actions (registration overrides, structure changes, decisions…).
+model AcademicAudit {
+  id          String   @id
+  actor_id    String?
+  actor_name  String?
+  actor_role  String?
+  action      String
+  target_type String
+  target_id   String
+  reason      String?
+  before      Json?
+  after       Json?
+  created_at  DateTime @default(now())
+
+  @@index([created_at])
+  @@index([target_type, target_id])
+  @@map("academic_audit")
 }

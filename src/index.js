@@ -67,6 +67,13 @@ const portalParentRouter  = require('./routes/portal/parent');
 const elearningRouter    = require('./routes/elearning');
 const paymentsRouter     = require('./routes/payments');
 const financeRouter      = require('./routes/finance');
+const academicsRouter    = require('./routes/academics');
+const registrationRouter = require('./routes/registration');
+const lecturerRouter     = require('./routes/lecturer');
+const resultsRouter      = require('./routes/results');
+const examsRouter        = require('./routes/exams');
+const progressionRouter  = require('./routes/progression');
+const documentsRouter    = require('./routes/documents');
 
 // ── Platform (Super Admin) routes ───────────────────────────────────────────────
 const platformDashboardRouter     = require('./routes/platform/dashboard');
@@ -134,6 +141,14 @@ app.use('/api/portal/parent',    portalParentRouter);
 app.use('/api/elearning',         elearningRouter);
 app.use('/api/payments',          paymentsRouter);
 app.use('/api/finance',           financeRouter);
+app.use('/api/academics',         academicsRouter);
+app.use('/api/registration',      registrationRouter);
+app.use('/api/lecturer',          lecturerRouter);
+app.use('/api/results',           resultsRouter);
+app.use('/api/exams',             examsRouter);
+app.use('/api/progression',       progressionRouter);
+app.use('/api/documents',         documentsRouter);
+app.use('/api/verify',            documentsRouter.verifyRouter);   // public: checks a document's verification code
 
 // ── Platform (Super Admin) routes ───────────────────────────────────────────────
 app.use('/api/platform/dashboard',     platformDashboardRouter);
