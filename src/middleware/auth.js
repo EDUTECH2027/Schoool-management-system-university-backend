@@ -1,6 +1,7 @@
 const jwt = require('jsonwebtoken');
 const platformClient = require('../db/platformClient');
 const tenantPool = require('../db/tenantPool');
+const sessions = require('../security/sessions');
 
 module.exports = async function authenticate(req, res, next) {
   const header = req.headers['authorization'];
@@ -27,7 +28,13 @@ module.exports = async function authenticate(req, res, next) {
   if (!school) return res.status(404).json({ error: 'School not found' });
   if (school.status !== 'active') return res.status(403).json({ error: 'School account is not active' });
 
+  const db = tenantPool.getOrOpen(payload.school_id);
+  // Tokens issued before the user's last password change are no longer valid (see security/sessions.js).
+  if (payload.id && !sessions.accepts(payload, token, await sessions.changedAt(db, payload))) {
+    return res.status(401).json({ error: 'Session expired: your password was changed. Please sign in again.', code: 'session_revoked' });
+  }
+
   req.user = payload;
-  req.db = tenantPool.getOrOpen(payload.school_id);
+  req.db = db;
   next();
 };

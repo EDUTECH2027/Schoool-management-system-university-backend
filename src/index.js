@@ -67,6 +67,17 @@ const portalParentRouter  = require('./routes/portal/parent');
 const elearningRouter    = require('./routes/elearning');
 const paymentsRouter     = require('./routes/payments');
 const financeRouter      = require('./routes/finance');
+const assessmentsRouter = require('./routes/assessments');
+const servicesRouter = require('./routes/services');
+const notificationCenterRouter = require('./routes/notificationCenter');
+const libraryRouter = require('./routes/library');
+const roomsRouter = require('./routes/rooms');
+const timetableEngineRouter = require('./routes/timetableEngine');
+const careersRouter = require('./routes/careers');
+const thesisRouter = require('./routes/thesis');
+const analyticsRouter = require('./routes/analytics');
+const assistantRouter = require('./routes/assistant');
+const securityRouter = require('./routes/security');
 const academicsRouter    = require('./routes/academics');
 const registrationRouter = require('./routes/registration');
 const lecturerRouter     = require('./routes/lecturer');
@@ -92,18 +103,41 @@ const platformFeaturesRouter      = require('./routes/platform/features');
 const app  = express();
 const PORT = process.env.PORT || 3001;
 
-app.use(helmet({ crossOriginResourcePolicy: false }));
+// ── Security middleware (see docs/SECURITY.md) ───────────────────────────────────
+// Behind Render (or any reverse proxy) the client IP comes from X-Forwarded-For; trusting that header blindly would
+// let anyone spoof their IP past the rate limiters, so it is only trusted when configured: TRUST_PROXY=<hops|true|csv>.
+{
+  const tp = process.env.TRUST_PROXY ?? (process.env.RENDER ? '1' : '');
+  if (tp !== '') app.set('trust proxy', /^\d+$/.test(tp) ? Number(tp) : tp === 'true' ? true : tp === 'false' ? false : tp);
+}
+// CSP is applied to the JSON API only (default-src 'none'): the desktop build also serves the SPA from this server.
+app.use(helmet({ crossOriginResourcePolicy: false, contentSecurityPolicy: false, referrerPolicy: { policy: 'no-referrer' }, hsts: process.env.NODE_ENV === 'production' }));
+app.use('/api', (_req, res, next) => {
+  res.set('Content-Security-Policy', "default-src 'none'; frame-ancestors 'none'; base-uri 'none'; form-action 'none'");
+  res.set('Permissions-Policy', 'camera=(), microphone=(), geolocation=(), payment=()');
+  next();
+});
+app.use(['/api/auth', '/api/security', '/api/assistant'], (_req, res, next) => { res.set('Cache-Control', 'no-store'); next(); });
 app.use(cors({
-  origin: (origin, cb) => cb(null, true), // all origins allowed (desktop + dev)
+  // CORS_ORIGINS="https://a.example,https://b.example" restricts browsers to those origins; unset = all origins (desktop + dev).
+  origin: process.env.CORS_ORIGINS
+    ? (origin, cb) => cb(null, !origin || process.env.CORS_ORIGINS.split(',').map(x => x.trim()).includes(origin))
+    : (origin, cb) => cb(null, true),
   credentials: true,
-  exposedHeaders: ['X-Has-More'],
+  exposedHeaders: ['X-Has-More', 'Retry-After'],
 }));
 app.use(compression());   // gzip JSON/text responses (images and other pre-compressed types are skipped)
 app.use(morgan('dev'));
 // Provider webhooks first: Stripe needs the raw request body for signature verification.
 require('./routes/paymentWebhooks').mount(app);
-app.use(express.json({ limit: '10mb' }));
-app.use(express.urlencoded({ extended: true }));
+app.use('/api', require('./security/rateLimit').globalLimiter);   // generous per-IP limit; /health and webhooks excluded
+{
+  const secCfg = require('./security/config');
+  const small = express.json({ limit: secCfg.jsonLimit() }), large = express.json({ limit: secCfg.jsonLimitLarge() });
+  const LARGE = /^\/api\/(finance|migrate|platform|students|teachers|school|elearning|fees|payroll|notification-center)(\/|$)/;
+  app.use((req, res, next) => (LARGE.test(req.path) ? large : small)(req, res, next));
+  app.use(express.urlencoded({ extended: true, limit: '100kb' }));
+}
 // Thumbnails first (/uploads/_t/<width>/…), then the originals. Stored names are random UUIDs, so a given
 // URL's content never changes → cache for a year.
 app.get('/uploads/_t/:width/*', require('./utils/thumbnails').handler);
@@ -149,6 +183,17 @@ app.use('/api/exams',             examsRouter);
 app.use('/api/progression',       progressionRouter);
 app.use('/api/documents',         documentsRouter);
 app.use('/api/verify',            documentsRouter.verifyRouter);   // public: checks a document's verification code
+app.use('/api/assessments', assessmentsRouter);
+app.use('/api/services', servicesRouter);
+app.use('/api/notification-center', notificationCenterRouter);
+app.use('/api/library', libraryRouter);
+app.use('/api/rooms', roomsRouter);
+app.use('/api/timetable-engine', timetableEngineRouter);
+app.use('/api/careers', careersRouter);
+app.use('/api/thesis', thesisRouter);
+app.use('/api/analytics', analyticsRouter);
+app.use('/api/assistant', assistantRouter);
+app.use('/api/security', securityRouter);
 
 // ── Platform (Super Admin) routes ───────────────────────────────────────────────
 app.use('/api/platform/dashboard',     platformDashboardRouter);

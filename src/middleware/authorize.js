@@ -1,10 +1,12 @@
+const { logDenied } = require('../security/events');
+
 module.exports = function authorize(...roles) {
   return (req, res, next) => {
     if (!req.user) return res.status(401).json({ error: 'Not authenticated' });
     if (req.user.scope === 'platform') return res.status(403).json({ error: 'Forbidden' });
     // head_teacher is a legacy alias for super_admin
     const role = req.user.role === 'head_teacher' ? 'super_admin' : req.user.role;
-    if (!roles.includes(role)) return res.status(403).json({ error: 'Forbidden' });
+    if (!roles.includes(role)) { logDenied(req); return res.status(403).json({ error: 'Forbidden' }); }
     next();
   };
 };

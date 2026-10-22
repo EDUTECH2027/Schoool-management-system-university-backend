@@ -5,6 +5,9 @@ const authenticate = require('../middleware/auth');
 const authorize = require('../middleware/authorize');
 const platformClient = require('../db/platformClient');
 const { logAction } = require('../routes/platform/_helpers');
+const { checkPassword } = require('../security/policy');
+const sessions = require('../security/sessions');
+const { logEvent } = require('../security/events');
 
 const guard = [authenticate, authorize('super_admin', 'head_teacher')];
 
@@ -45,6 +48,8 @@ router.get('/:id', ...guard, async (req, res) => {
 router.post('/', ...guard, async (req, res) => {
   const { name, email, password, role, initials, teacher_id, student_id, parent_id } = req.body;
   if (!name || !email || !password || !role) return res.status(422).json({ error: 'name, email, password, role required' });
+  const weakPw = checkPassword(password, { email, name });
+  if (weakPw) return res.status(422).json({ error: weakPw, code: 'weak_password' });
 
   const existing = await req.db.user.findFirst({ where: { email: { equals: email, mode: 'insensitive' } } });
   if (existing) return res.status(409).json({ error: 'Email already in use' });
@@ -118,11 +123,16 @@ router.put('/:id', ...guard, async (req, res) => {
 // PATCH /api/users/:id/password
 router.patch('/:id/password', ...guard, async (req, res) => {
   const { password } = req.body;
-  if (!password || password.length < 6) return res.status(422).json({ error: 'Password must be at least 6 characters' });
   const user = await req.db.user.findUnique({ where: { id: req.params.id } });
   if (!user) return res.status(404).json({ error: 'User not found' });
+  const weakPw = checkPassword(password, { email: user.email, name: user.name });
+  if (weakPw) return res.status(422).json({ error: weakPw, code: 'weak_password' });
   const hash = bcrypt.hashSync(password, 10);
-  await req.db.user.update({ where: { id: req.params.id }, data: { password_hash: hash, updated_at: new Date() } });
+  const now = new Date();
+  // An admin-set password signs the user out everywhere (older tokens are rejected) and lifts any lockout.
+  await req.db.user.update({ where: { id: req.params.id }, data: { password_hash: hash, password_changed_at: now, failed_logins: 0, locked_until: null, updated_at: now } });
+  sessions.markChanged(req.user.school_id, req.params.id, now, req.params.id === req.user.id ? { token: req.headers.authorization.slice(7), exp: req.user.exp } : undefined);
+  await logEvent(req.db, { type: 'password_changed', user_id: user.id, email: user.email, req, detail: { by: 'admin', actor_id: req.user.id } });
   res.json({ message: 'Password updated' });
 });
 

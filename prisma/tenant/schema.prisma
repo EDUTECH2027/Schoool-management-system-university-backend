@@ -16,6 +16,7 @@ enum Role {
   parent
   finance_officer
   academic_officer
+  librarian
 }
 
 enum Gender {
@@ -102,6 +103,9 @@ model User {
   student_id           String?
   parent_id            String?
   must_change_password Boolean   @default(false)
+  failed_logins        Int       @default(0)
+  locked_until         DateTime?
+  password_changed_at  DateTime?
   created_at           DateTime? @default(now())
   updated_at           DateTime? @default(now())
 
@@ -271,6 +275,9 @@ model Teacher {
   offerings          CourseOffering[]
   invigilations      ExamInvigilator[]
 
+  supervised_theses    Thesis[] @relation("ThesisSupervisor")
+  co_supervised_theses Thesis[] @relation("ThesisCoSupervisor")
+
   @@map("teachers")
 }
 
@@ -366,6 +373,14 @@ model Student {
   enrollment_history   StudentEnrollmentHistory[]
   progression          ProgressionDecision[]
   official_documents   OfficialDocument[]
+  assignment_submissions AssignmentSubmission[]
+  quiz_attempts        QuizAttempt[]
+  service_requests     ServiceRequest[]
+  library_loans        LibraryLoan[]
+  library_reservations LibraryReservation[]
+  alumni_profile       AlumniProfile?
+  job_applications     JobApplication[]
+  theses               Thesis[]
   @@map("students")
 }
 
@@ -1110,6 +1125,8 @@ model CourseOffering {
   slots       OfferingSlot[]
   enrollments CourseEnrollment[]
   exams       ExamSession[]
+  assignments Assignment[]
+  quizzes     Quiz[]
 
   @@unique([subject_id, term_id, section])
   @@index([term_id])
@@ -1124,8 +1141,10 @@ model OfferingSlot {
   day         Day
   period_key  String
   room        String?
+  room_id     String?
 
   offering CourseOffering @relation(fields: [offering_id], references: [id], onDelete: Cascade)
+  room_ref Room?          @relation(fields: [room_id], references: [id], onDelete: SetNull)
 
   @@unique([offering_id, day, period_key])
   @@map("offering_slots")
@@ -1255,6 +1274,7 @@ model ExamSession {
   start_time  String                           // HH:MM
   end_time    String
   room        String?
+  room_id     String?
   status      String   @default("scheduled")   // scheduled | held | cancelled
   created_by  String?
   created_at  DateTime @default(now())
@@ -1262,6 +1282,7 @@ model ExamSession {
   subject      Subject           @relation(fields: [subject_id], references: [id], onDelete: Cascade)
   term         Term              @relation(fields: [term_id], references: [id], onDelete: Cascade)
   offering     CourseOffering?   @relation(fields: [offering_id], references: [id], onDelete: SetNull)
+  room_ref     Room?             @relation(fields: [room_id], references: [id], onDelete: SetNull)
   invigilators ExamInvigilator[]
   candidates   ExamCandidate[]
 
@@ -1415,4 +1436,508 @@ model AcademicAudit {
   @@index([created_at])
   @@index([target_type, target_id])
   @@map("academic_audit")
+}
+
+// ═══════════════════════════════════════════════════════════════════════════════
+// Phase 3 — assessments, services, notifications, library, rooms, careers, thesis, assistant, security
+// Statuses are plain strings (validated in code) so new states never need an enum migration.
+// ═══════════════════════════════════════════════════════════════════════════════
+
+// ── E-learning assessments (attached to a course offering, so rosters come from registrations) ──
+model Assignment {
+  id           String   @id
+  offering_id  String
+  title        String
+  instructions String?
+  due_at       DateTime
+  max_score    Float    @default(20)
+  weight       Float    @default(1)          // weight inside the continuous-assessment average
+  allow_late   Boolean  @default(false)
+  allow_text   Boolean  @default(true)
+  allow_file   Boolean  @default(true)
+  status       String   @default("draft")    // draft | published | closed
+  created_by   String?
+  created_at   DateTime @default(now())
+  updated_at   DateTime @default(now())
+
+  offering    CourseOffering         @relation(fields: [offering_id], references: [id], onDelete: Cascade)
+  submissions AssignmentSubmission[]
+
+  @@index([offering_id, status])
+  @@map("assignments")
+}
+
+model AssignmentSubmission {
+  id            String    @id
+  assignment_id String
+  student_id    String
+  text          String?
+  file_name     String?
+  file_mime     String?
+  file_size     Int?
+  file_data     Bytes?                           // stored in the database (ephemeral-filesystem hosts)
+  submitted_at  DateTime  @default(now())
+  is_late       Boolean   @default(false)
+  status        String    @default("submitted")  // submitted | graded | returned
+  score         Float?
+  feedback      String?
+  graded_by     String?
+  graded_at     DateTime?
+
+  assignment Assignment @relation(fields: [assignment_id], references: [id], onDelete: Cascade)
+  student    Student    @relation(fields: [student_id], references: [id], onDelete: Cascade)
+
+  @@unique([assignment_id, student_id])
+  @@index([student_id])
+  @@map("assignment_submissions")
+}
+
+model Quiz {
+  id               String    @id
+  offering_id      String
+  title            String
+  instructions     String?
+  opens_at         DateTime?
+  closes_at        DateTime?
+  duration_minutes Int?                           // null = untimed
+  max_attempts     Int       @default(1)
+  shuffle          Boolean   @default(false)
+  show_answers     Boolean   @default(false)      // reveal correct answers after the quiz closes
+  weight           Float     @default(1)
+  status           String    @default("draft")    // draft | published | closed
+  created_by       String?
+  created_at       DateTime  @default(now())
+  updated_at       DateTime  @default(now())
+
+  offering  CourseOffering @relation(fields: [offering_id], references: [id], onDelete: Cascade)
+  questions QuizQuestion[]
+  attempts  QuizAttempt[]
+
+  @@index([offering_id, status])
+  @@map("quizzes")
+}
+
+model QuizQuestion {
+  id       String @id
+  quiz_id  String
+  position Int    @default(0)
+  type     String                       // single | multiple | true_false | short
+  text     String
+  options  Json?                        // [{id,text}] for single/multiple
+  answer   Json                         // server-only: option id(s) | boolean | accepted strings[]
+  points   Float  @default(1)
+  explanation String?
+
+  quiz Quiz @relation(fields: [quiz_id], references: [id], onDelete: Cascade)
+
+  @@index([quiz_id, position])
+  @@map("quiz_questions")
+}
+
+model QuizAttempt {
+  id           String    @id
+  quiz_id      String
+  student_id   String
+  attempt_no   Int       @default(1)
+  started_at   DateTime  @default(now())
+  deadline_at  DateTime?
+  submitted_at DateTime?
+  status       String    @default("in_progress")  // in_progress | submitted | graded
+  answers      Json?
+  score        Float?
+  max_score    Float?
+  question_order Json?
+
+  quiz    Quiz    @relation(fields: [quiz_id], references: [id], onDelete: Cascade)
+  student Student @relation(fields: [student_id], references: [id], onDelete: Cascade)
+
+  @@unique([quiz_id, student_id, attempt_no])
+  @@index([student_id])
+  @@map("quiz_attempts")
+}
+
+// ── Student services (requests with a workflow) ──────────────────────────────────────────────
+model ServiceRequest {
+  id            String    @id
+  reference     String    @unique              // SR-2610-ABC123, shown to the student
+  student_id    String
+  type          String                         // certificate | transcript | correction | leave | complaint | other
+  subject       String
+  description   String?
+  status        String    @default("submitted") // submitted | in_review | awaiting_info | approved | rejected | completed | cancelled
+  priority      String    @default("normal")
+  assigned_to   String?                        // user id
+  decision_note String?
+  document_id   String?                        // official document issued as the outcome
+  payload       Json?
+  created_at    DateTime  @default(now())
+  updated_at    DateTime  @default(now())
+  closed_at     DateTime?
+
+  student Student                @relation(fields: [student_id], references: [id], onDelete: Cascade)
+  events  ServiceRequestEvent[]
+
+  @@index([student_id])
+  @@index([status, created_at])
+  @@map("service_requests")
+}
+
+model ServiceRequestEvent {
+  id          String   @id
+  request_id  String
+  kind        String                          // comment | status | assignment | document
+  from_status String?
+  to_status   String?
+  body        String?
+  internal    Boolean  @default(false)        // staff-only note, never shown to the student
+  author_id   String?
+  author_name String?
+  author_role String?
+  created_at  DateTime @default(now())
+
+  request ServiceRequest @relation(fields: [request_id], references: [id], onDelete: Cascade)
+
+  @@index([request_id, created_at])
+  @@map("service_request_events")
+}
+
+// ── Notification centre ──────────────────────────────────────────────────────────────────────
+model NotificationPreference {
+  id         String   @id
+  user_id    String   @unique
+  email      Boolean  @default(true)
+  in_app     Boolean  @default(true)
+  muted_types Json?                             // ["forum", ...] categories the user opted out of (never for "security")
+  updated_at DateTime @default(now())
+
+  @@map("notification_preferences")
+}
+
+model EmailOutbox {
+  id         String    @id
+  user_id    String?
+  to_email   String
+  subject    String
+  body       String
+  status     String    @default("queued")      // queued | sent | failed | skipped
+  attempts   Int       @default(0)
+  error      String?
+  type       String?
+  created_at DateTime  @default(now())
+  sent_at    DateTime?
+
+  @@index([status, created_at])
+  @@map("email_outbox")
+}
+
+model Broadcast {
+  id          String   @id
+  title       String
+  body        String
+  audience    Json                              // { roles?:[], programme_ids?:[], class_ids?:[], offering_ids?:[] }
+  channels    Json                              // ["in_app","email"]
+  recipients  Int      @default(0)
+  created_by  String?
+  created_by_name String?
+  created_at  DateTime @default(now())
+
+  @@map("broadcasts")
+}
+
+// ── Library ──────────────────────────────────────────────────────────────────────────────────
+model LibraryItem {
+  id           String   @id
+  isbn         String?
+  title        String
+  authors      String?
+  publisher    String?
+  year         Int?
+  category     String?
+  kind         String   @default("book")      // book | journal | thesis | digital
+  location     String?
+  description  String?
+  copies_total Int      @default(1)
+  digital_url  String?
+  is_active    Boolean  @default(true)
+  created_at   DateTime @default(now())
+  updated_at   DateTime @default(now())
+
+  loans        LibraryLoan[]
+  reservations LibraryReservation[]
+
+  @@index([title])
+  @@index([isbn])
+  @@map("library_items")
+}
+
+model LibraryLoan {
+  id           String    @id
+  item_id      String
+  student_id   String?
+  teacher_id   String?
+  borrowed_at  DateTime  @default(now())
+  due_at       DateTime
+  returned_at  DateTime?
+  renewals     Int       @default(0)
+  status       String    @default("active")   // active | returned | lost
+  fine_amount  Float     @default(0)
+  fine_paid    Boolean   @default(false)
+  fine_waived  Boolean   @default(false)
+  issued_by    String?
+
+  item    LibraryItem @relation(fields: [item_id], references: [id], onDelete: Cascade)
+  student Student?    @relation(fields: [student_id], references: [id], onDelete: Cascade)
+
+  @@index([item_id, status])
+  @@index([student_id, status])
+  @@map("library_loans")
+}
+
+model LibraryReservation {
+  id         String    @id
+  item_id    String
+  student_id String
+  status     String    @default("waiting")    // waiting | ready | fulfilled | cancelled | expired
+  created_at DateTime  @default(now())
+  notified_at DateTime?
+
+  item    LibraryItem @relation(fields: [item_id], references: [id], onDelete: Cascade)
+  student Student     @relation(fields: [student_id], references: [id], onDelete: Cascade)
+
+  @@index([item_id, status])
+  @@map("library_reservations")
+}
+
+model LibrarySettings {
+  id           String @id                     // "main"
+  loan_days    Int    @default(14)
+  max_loans    Int    @default(3)
+  max_renewals Int    @default(2)
+  fine_per_day Float  @default(100)
+  currency     String @default("XAF")
+  block_on_fines Boolean @default(true)       // no new loans while unpaid fines exist
+  updated_at   DateTime @default(now())
+
+  @@map("library_settings")
+}
+
+// ── Rooms & timetable engine ─────────────────────────────────────────────────────────────────
+model Room {
+  id        String   @id
+  code      String   @unique
+  name      String
+  building  String?
+  capacity  Int      @default(30)
+  kind      String   @default("classroom")    // classroom | lab | lecture_hall | exam_hall | other
+  equipment String?
+  is_active Boolean  @default(true)
+  created_at DateTime @default(now())
+
+  slots    OfferingSlot[]
+  exams    ExamSession[]
+  bookings RoomBooking[]
+
+  @@map("rooms")
+}
+
+model RoomBooking {
+  id         String   @id
+  room_id    String
+  title      String
+  date       String                             // YYYY-MM-DD
+  start_time String                             // HH:MM
+  end_time   String
+  booked_by  String?
+  status     String   @default("confirmed")    // confirmed | cancelled
+  created_at DateTime @default(now())
+
+  room Room @relation(fields: [room_id], references: [id], onDelete: Cascade)
+
+  @@index([room_id, date])
+  @@map("room_bookings")
+}
+
+model TimetablePeriod {
+  id         String  @id
+  key        String  @unique                    // matches offering_slots.period_key, e.g. P1
+  label      String
+  start_time String                             // HH:MM
+  end_time   String
+  sort_order Int     @default(0)
+
+  @@map("timetable_periods")
+}
+
+// ── Careers & alumni ─────────────────────────────────────────────────────────────────────────
+model AlumniProfile {
+  id              String   @id
+  student_id      String   @unique
+  graduation_year Int?
+  programme_name  String?
+  employer        String?
+  position        String?
+  city            String?
+  bio             String?
+  linkedin_url    String?
+  contact_email   String?
+  is_public       Boolean  @default(false)     // opt-in: directory only shows consenting alumni
+  created_at      DateTime @default(now())
+  updated_at      DateTime @default(now())
+
+  student Student @relation(fields: [student_id], references: [id], onDelete: Cascade)
+
+  @@map("alumni_profiles")
+}
+
+model JobPosting {
+  id          String    @id
+  title       String
+  company     String
+  kind        String    @default("job")        // job | internship | volunteering
+  location    String?
+  description String
+  apply_url   String?
+  contact_email String?
+  deadline    String?                           // YYYY-MM-DD
+  status      String    @default("open")       // open | closed | draft
+  posted_by   String?
+  posted_by_name String?
+  created_at  DateTime  @default(now())
+
+  applications JobApplication[]
+
+  @@index([status, created_at])
+  @@map("job_postings")
+}
+
+model JobApplication {
+  id         String   @id
+  job_id     String
+  student_id String
+  cover_note String?
+  status     String   @default("submitted")   // submitted | shortlisted | rejected | hired | withdrawn
+  created_at DateTime @default(now())
+
+  job     JobPosting @relation(fields: [job_id], references: [id], onDelete: Cascade)
+  student Student    @relation(fields: [student_id], references: [id], onDelete: Cascade)
+
+  @@unique([job_id, student_id])
+  @@map("job_applications")
+}
+
+// ── Thesis / final-year project ──────────────────────────────────────────────────────────────
+model Thesis {
+  id               String    @id
+  student_id       String
+  title            String
+  abstract         String?
+  keywords         String?
+  kind             String    @default("thesis")  // thesis | project | internship_report
+  status           String    @default("proposed") // proposed | supervisor_accepted | approved | in_progress | submitted | defence_scheduled | defended | completed | rejected | withdrawn
+  supervisor_id    String?
+  co_supervisor_id String?
+  defence_date     String?
+  defence_time     String?
+  defence_room     String?
+  jury             Json?                         // [{name, role}]
+  final_score      Float?
+  final_grade      String?
+  decision_note    String?
+  created_at       DateTime  @default(now())
+  updated_at       DateTime  @default(now())
+
+  student       Student  @relation(fields: [student_id], references: [id], onDelete: Cascade)
+  supervisor    Teacher? @relation("ThesisSupervisor", fields: [supervisor_id], references: [id], onDelete: SetNull)
+  co_supervisor Teacher? @relation("ThesisCoSupervisor", fields: [co_supervisor_id], references: [id], onDelete: SetNull)
+  milestones    ThesisMilestone[]
+  submissions   ThesisSubmission[]
+  events        ThesisEvent[]
+
+  @@index([student_id])
+  @@index([supervisor_id])
+  @@map("theses")
+}
+
+model ThesisMilestone {
+  id          String    @id
+  thesis_id   String
+  title       String
+  due_date    String?
+  status      String    @default("pending")    // pending | submitted | accepted | revision_requested
+  feedback    String?
+  position    Int       @default(0)
+  updated_at  DateTime  @default(now())
+
+  thesis Thesis @relation(fields: [thesis_id], references: [id], onDelete: Cascade)
+
+  @@index([thesis_id])
+  @@map("thesis_milestones")
+}
+
+model ThesisSubmission {
+  id           String   @id
+  thesis_id    String
+  milestone_id String?
+  version      Int      @default(1)
+  note         String?
+  file_name    String?
+  file_mime    String?
+  file_size    Int?
+  file_data    Bytes?
+  feedback     String?
+  reviewed_by  String?
+  reviewed_at  DateTime?
+  created_at   DateTime @default(now())
+
+  thesis Thesis @relation(fields: [thesis_id], references: [id], onDelete: Cascade)
+
+  @@index([thesis_id])
+  @@map("thesis_submissions")
+}
+
+model ThesisEvent {
+  id          String   @id
+  thesis_id   String
+  kind        String                            // status | comment | assignment | defence
+  from_status String?
+  to_status   String?
+  body        String?
+  author_id   String?
+  author_name String?
+  author_role String?
+  created_at  DateTime @default(now())
+
+  thesis Thesis @relation(fields: [thesis_id], references: [id], onDelete: Cascade)
+
+  @@index([thesis_id, created_at])
+  @@map("thesis_events")
+}
+
+// ── AI assistant usage (no conversation content is stored) ───────────────────────────────────
+model AssistantUsage {
+  id       String @id
+  user_id  String
+  day      String                               // YYYY-MM-DD
+  requests Int    @default(0)
+  tokens   Int    @default(0)
+
+  @@unique([user_id, day])
+  @@map("assistant_usage")
+}
+
+// ── Security events (login failures, lockouts, password changes…) ────────────────────────────
+model SecurityEvent {
+  id         String   @id
+  user_id    String?
+  email      String?
+  type       String                              // login_success | login_failed | account_locked | password_changed | permission_denied | rate_limited
+  ip         String?
+  user_agent String?
+  detail     Json?
+  created_at DateTime @default(now())
+
+  @@index([created_at])
+  @@index([type, created_at])
+  @@index([user_id, created_at])
+  @@map("security_events")
 }
