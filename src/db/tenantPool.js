@@ -3,7 +3,7 @@
 // a client explicitly (middleware/auth.js sets req.db) rather than relying on
 // implicit per-request context, since nothing here runs outside a request.
 const { PrismaClient } = require('../../node_modules/.prisma/tenant-client');
-const { tenantUrlFor } = require('./tenantSchema');
+const { tenantUrlFor, schemaNameFor } = require('./tenantSchema');
 
 const MAX_OPEN = Number(process.env.MAX_OPEN_TENANT_PRISMA_CLIENTS) || 25;
 
@@ -26,7 +26,10 @@ function evictLruIfOverCap() {
 function getOrOpen(schoolId) {
   let entry = pool.get(schoolId);
   if (!entry) {
-    const client = new PrismaClient({ datasourceUrl: tenantUrlFor(schoolId) });
+    // `?schema=` only qualifies ORM queries; raw SQL (FOR UPDATE locks, sequences, analytics) resolves unqualified
+    // table names through the connection's search_path, so set it at connection start too.
+    const searchPath = encodeURIComponent(`-c search_path=${schemaNameFor(schoolId)},public`);
+    const client = new PrismaClient({ datasourceUrl: `${tenantUrlFor(schoolId)}&options=${searchPath}` });
     entry = { client, lastUsed: Date.now() };
     pool.set(schoolId, entry);
     evictLruIfOverCap();

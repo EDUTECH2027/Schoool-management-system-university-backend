@@ -6,6 +6,7 @@ const cfg = require('../security/config');
 const { logEvent } = require('../security/events');
 const sessions = require('../security/sessions');
 const { sendCsv } = require('../analytics/csv');
+const { schemaNameFor } = require('../db/tenantSchema');
 
 router.use(authenticate, authorize('super_admin'));
 
@@ -61,10 +62,15 @@ router.get('/events/export', async (req, res) => {
 router.get('/summary', async (req, res) => {
   const days = Math.min(90, Math.max(1, parseInt(req.query.days, 10) || 14));
   const since = new Date(Date.now() - days * 86_400_000);
+  // Raw SQL uses unqualified table names; pin the tenant schema (the pooled connection's search_path is `public`).
+  const rawRows = (build) => req.db.$transaction(async (tx) => {
+    await tx.$executeRawUnsafe(`SET LOCAL search_path TO "${schemaNameFor(req.user.school_id)}", public`);
+    return build(tx);
+  });
   const [byDay, byType, topIps, locked, mustChange, failing] = await Promise.all([
-    req.db.$queryRaw`SELECT to_char(created_at AT TIME ZONE 'UTC', 'YYYY-MM-DD') AS day, type, COUNT(*)::int AS n FROM security_events WHERE created_at >= ${since} GROUP BY 1, 2 ORDER BY 1`,
+    rawRows(tx => tx.$queryRaw`SELECT to_char(created_at AT TIME ZONE 'UTC', 'YYYY-MM-DD') AS day, type, COUNT(*)::int AS n FROM security_events WHERE created_at >= ${since} GROUP BY 1, 2 ORDER BY 1`),
     req.db.securityEvent.groupBy({ by: ['type'], where: { created_at: { gte: since } }, _count: { _all: true } }),
-    req.db.$queryRaw`SELECT ip, COUNT(*)::int AS failures, COUNT(DISTINCT email)::int AS accounts, MAX(created_at) AS last_seen FROM security_events WHERE type = 'login_failed' AND created_at >= ${since} AND ip IS NOT NULL GROUP BY ip ORDER BY failures DESC, ip LIMIT 10`,
+    rawRows(tx => tx.$queryRaw`SELECT ip, COUNT(*)::int AS failures, COUNT(DISTINCT email)::int AS accounts, MAX(created_at) AS last_seen FROM security_events WHERE type = 'login_failed' AND created_at >= ${since} AND ip IS NOT NULL GROUP BY ip ORDER BY failures DESC, ip LIMIT 10`),
     req.db.user.findMany({ where: { locked_until: { gt: new Date() } }, select: { id: true, name: true, email: true, role: true, locked_until: true }, orderBy: { locked_until: 'desc' } }),
     req.db.user.count({ where: { must_change_password: true } }),
     req.db.user.count({ where: { failed_logins: { gt: 0 } } }),
